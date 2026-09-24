@@ -15,8 +15,8 @@ Sirve como control operativo de:
 ## Corte actual
 
 - Fecha de actualizacion: `2026-09-23`
-- Estado general: `Bootstrap, acceso y Execution Engine minimo de Database implementados`
-- Foco del corte: `cerrar DV-DB-003 con query executor, statement executor, result model y errores normalizados`
+- Estado general: `Bootstrap, acceso, Execution y Query MVP de Database implementados`
+- Foco del corte: `cerrar DV-DB-004 con Query Model, AST minimo, Query Builder y SQL compiler basico`
 
 ## Versionado de desarrollo
 
@@ -122,16 +122,26 @@ Las siguientes entradas representan el orden sugerido de ejecucion. No deben mar
 
 ### DV-DB-004
 
-- Estado: `Planificado`
+- Estado: `Implementado`
 - Bloque documental: `23-75`
 - Alcance objetivo:
   - construir Query Model / AST minimo,
   - exponer Query Builder para `select/insert/update/delete` basicos,
   - y conectar builder con compiler y execution.
-- Evidencia esperada:
-  - `src/Quantum/Database/Query`
-  - pruebas unitarias de AST/builder/compiler
-  - pruebas de integracion con motor real
+- Evidencia principal:
+  - `vendor/voltstack/framework/src/Quantum/Database/Query/{QueryType,QueryMetadata,QueryInterface,DatabaseQueryRunner}.php`
+  - `vendor/voltstack/framework/src/Quantum/Database/Query/Model/{TableReference,Predicate,Ordering,SelectQuery,InsertQuery,UpdateQuery,DeleteQuery}.php`
+  - `vendor/voltstack/framework/src/Quantum/Database/Query/Ast/{TableNode,PredicateNode,OrderingNode,SelectQueryNode,InsertQueryNode,UpdateQueryNode,DeleteQueryNode,QueryAstFactory}.php`
+  - `vendor/voltstack/framework/src/Quantum/Database/Query/Compiler/{CompiledQuery,QueryCompilerInterface,SqlCompiler}.php`
+  - `vendor/voltstack/framework/src/Quantum/Database/Query/Builder/{DatabaseQueryManager,SelectQueryBuilder}.php`
+  - actualizacion de `vendor/voltstack/framework/src/Quantum/Database/Integration/DatabaseServiceProvider.php`
+  - `vendor/voltstack/framework/tests/Unit/DatabaseQueryCompilerTest.php`
+  - `vendor/voltstack/framework/tests/Feature/DatabaseQueryBuilderExecutionTest.php`
+- Resultado:
+  - `Quantum/Database` ya acepta consultas estructuradas sin depender de SQL manual en la capa de entrada,
+  - existe un vertical minimo `Query Model -> AST -> Compiler -> Execution`,
+  - el builder expone una API inicial tipo `table(...)->where(...)->get()/insert()/update()/delete()`,
+  - y la compilacion respeta placeholders separados y quoting por dialecto.
 
 ### DV-DB-005
 
@@ -223,6 +233,13 @@ Las siguientes entradas representan el orden sugerido de ejecucion. No deben mar
    - `QueryExecutor`,
    - `DatabaseResult`,
    - `ExecutionException`.
+7. Query MVP con:
+   - `Select/Insert/Update/DeleteQuery`,
+   - AST minimo,
+   - `SqlCompiler`,
+   - `DatabaseQueryManager`,
+   - `SelectQueryBuilder`,
+   - ejecucion real por builder sobre SQLite.
 
 ### Parcial o indirectamente disponible
 
@@ -243,22 +260,18 @@ Las siguientes entradas representan el orden sugerido de ejecucion. No deben mar
 
 ### Opcion recomendada posterior
 
-Abrir el vertical minimo de Query:
+Abrir `Schema + Migrations MVP`:
 
-- `23_DATABASE_QUERY_ARCHITECTURE.md`
-- `24_DATABASE_QUERY_MODEL.md`
-- `25_DATABASE_QUERY_AST_SYSTEM.md`
-- `26_DATABASE_QUERY_AST_NODE_MODEL.md`
-- `43_DATABASE_QUERY_BUILDER_ARCHITECTURE.md`
-- `44-54`
-- `66_DATABASE_SQL_COMPILER_ARCHITECTURE.md`
-- `67-75`
+- `87_DATABASE_SCHEMA_ARCHITECTURE.md`
+- `88-100`
+- `101_DATABASE_MIGRATION_ARCHITECTURE.md`
+- `102-111`
 
 Motivo:
 
-- lifetimes, configuracion, acceso logico y ejecucion minima ya quedaron resueltos,
-- ahora el gap principal es dejar de depender de SQL manual como entrada directa,
-- y esa capa habilita despues schema, migrations y transactions sobre el mismo runtime.
+- lifetimes, configuracion, acceso logico, ejecucion y Query MVP ya quedaron resueltos,
+- ahora el gap principal es evolucionar estructura sin depender de SQL disperso,
+- y esa capa habilita despues transacciones y CLI de operaciones.
 
 ## Regla de actualizacion de esta bitacora
 

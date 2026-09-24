@@ -262,6 +262,10 @@ El subsistema puede ejecutar una orden compilada con ownership explicito de recu
 
 ### Estado actual
 
+- `Implementado en DV-DB-004`
+
+### Estado actual
+
 - `Siguiente fase activa recomendada`
 
 ### Documentos fuente principales
@@ -303,7 +307,21 @@ Habilitar construccion y compilacion de queries basicas sin contaminar el builde
 
 Existe un vertical completo `builder -> compiler -> execution` para operaciones basicas.
 
+### Resultado del corte DV-DB-004
+
+1. `QueryType`, `QueryMetadata` y contratos base de query.
+2. Query Models minimos para `SELECT`, `INSERT`, `UPDATE` y `DELETE`.
+3. AST minimo y `QueryAstFactory`.
+4. `SqlCompiler` basico hacia `CompiledDatabaseCommand`.
+5. `DatabaseQueryManager` y `SelectQueryBuilder` con API publica inicial.
+6. ejecucion real del vertical completo contra SQLite.
+7. pruebas unitarias y feature en verde para compiler y builder execution.
+
 ## Fase 5 - Schema y Migrations MVP
+
+### Estado actual
+
+- `Siguiente fase activa recomendada`
 
 ### Documentos fuente principales
 
