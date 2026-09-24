@@ -15,8 +15,8 @@ Sirve como control operativo de:
 ## Corte actual
 
 - Fecha de actualizacion: `2026-09-23`
-- Estado general: `Subsistema Database documentado pero aun no implementado en Quantum/Database`
-- Foco del corte: `establecer sistema de desarrollo, matriz, bitacora y plan ejecutivo para construir un Database V1 real`
+- Estado general: `Base de bootstrap, configuracion tipada y runtime scope de Database implementada`
+- Foco del corte: `cerrar DV-DB-001 con provider, composition root, config tipada y lifecycle inicial por request`
 
 ## Versionado de desarrollo
 
@@ -48,7 +48,7 @@ Las siguientes entradas representan el orden sugerido de ejecucion. No deben mar
 
 ### DV-DB-001
 
-- Estado: `Planificado`
+- Estado: `Implementado`
 - Bloque documental: `06`, `07`, `251`, `252`, `311`, `312`, `313`, `321`
 - Alcance objetivo:
   - introducir `DatabaseServiceProvider`,
@@ -56,12 +56,25 @@ Las siguientes entradas representan el orden sugerido de ejecucion. No deben mar
   - compilar configuracion tipada,
   - crear `DatabaseExecutionScope`,
   - y enlazar el lifecycle con el runtime del framework.
-- Evidencia esperada:
-  - `src/Quantum/Database/Config`
-  - `src/Quantum/Database/Runtime`
-  - `src/Quantum/Database/Integration`
-  - bindings reales en bootstrap
-  - tests de scope y bindings
+- Evidencia principal:
+  - `vendor/voltstack/framework/src/Quantum/Database/Contracts/DatabaseConfigurationProviderInterface.php`
+  - `vendor/voltstack/framework/src/Quantum/Database/Config/DatabaseConfiguration.php`
+  - `vendor/voltstack/framework/src/Quantum/Database/Config/FrameworkDatabaseConfigurationProvider.php`
+  - `vendor/voltstack/framework/src/Quantum/Database/Runtime/DatabaseExecutionScope.php`
+  - `vendor/voltstack/framework/src/Quantum/Database/Runtime/DatabaseExecutionScopeFactory.php`
+  - `vendor/voltstack/framework/src/Quantum/Database/Runtime/DatabaseContext.php`
+  - `vendor/voltstack/framework/src/Quantum/Database/Runtime/DatabaseScopeLifecycleManager.php`
+  - `vendor/voltstack/framework/src/Quantum/Database/Integration/DatabaseCompositionRoot.php`
+  - `vendor/voltstack/framework/src/Quantum/Database/Integration/DatabaseServiceProvider.php`
+  - `vendor/voltstack/framework/src/Platform/Application.php`
+  - `config/database.php`
+  - `vendor/voltstack/framework/tests/Unit/DatabaseConfigurationBindingTest.php`
+  - `vendor/voltstack/framework/tests/Feature/DatabaseRuntimeScopeTest.php`
+- Resultado:
+  - `Quantum/Database` deja de ser un namespace vacio y pasa a tener base de configuracion, runtime e integracion con el framework,
+  - `DatabaseServiceProvider` queda registrado por defecto en `Application`,
+  - `DatabaseExecutionScope` se crea por request y se finaliza correctamente al cerrar el scope,
+  - y el skeleton ya expone un `config/database.php` minimo para consumir el subsistema.
 
 ### DV-DB-002
 
@@ -170,13 +183,20 @@ Las siguientes entradas representan el orden sugerido de ejecucion. No deben mar
    - telemetry,
    - console,
    - service provider base.
-3. Sistema de desarrollo documental para controlar la construccion futura.
+3. `Quantum/Database` con base inicial de:
+   - configuracion tipada,
+   - composition root,
+   - execution scope,
+   - context,
+   - lifecycle manager,
+   - service provider.
+4. Sistema de desarrollo documental para controlar la construccion futura.
 
 ### Parcial o indirectamente disponible
 
-1. Runtime persistente general del framework reutilizable por Database.
-2. Telemetria general del framework reusable por Database.
-3. CLI y bootstrap general listos para integrar un futuro `DatabaseServiceProvider`.
+1. Runtime persistente general del framework ya conectado a Database en lifecycle HTTP.
+2. Telemetria general del framework reusable por Database, aunque aun no instrumentada desde el subsistema.
+3. CLI y bootstrap general listos para la siguiente fase de conexion y ejecucion.
 
 ### Aun no desarrollado con evidencia suficiente
 
@@ -191,22 +211,23 @@ Las siguientes entradas representan el orden sugerido de ejecucion. No deben mar
 
 ### Opcion recomendada posterior
 
-Cerrar primero el nucleo que define lifetimes, configuracion y ownership:
+Abrir la siguiente capa estructural del subsistema:
 
-- `06_DATABASE_CONFIGURATION_SYSTEM.md`
-- `07_DATABASE_BOOTSTRAP_AND_SERVICE_CONTAINER_INTEGRATION.md`
-- `251_DATABASE_PERSISTENT_RUNTIME_ARCHITECTURE.md`
-- `252_DATABASE_REQUEST_SCOPE_SYSTEM.md`
-- `311_DATABASE_FRAMEWORK_INTEGRATION_ARCHITECTURE.md`
-- `312_DATABASE_CONTAINER_INTEGRATION_SYSTEM.md`
-- `313_DATABASE_CONFIG_INTEGRATION_SYSTEM.md`
-- `321_DATABASE_HTTP_REQUEST_LIFECYCLE_INTEGRATION.md`
+- `10_DATABASE_DRIVER_ARCHITECTURE.md`
+- `11_DATABASE_CONNECTION_SYSTEM.md`
+- `12_DATABASE_CONNECTION_MANAGER.md`
+- `13_DATABASE_CONNECTION_CONFIGURATION_AND_RESOLUTION.md`
+- `14_DATABASE_CONNECTION_POOLING_SYSTEM.md`
+- `15_DATABASE_CONNECTION_LIFECYCLE_SYSTEM.md`
+- `16_DATABASE_CONNECTION_STATE_AND_RESET_SYSTEM.md`
+- `17_DATABASE_DIALECT_SYSTEM.md`
+- `18_DATABASE_PLATFORM_CAPABILITY_SYSTEM.md`
 
 Motivo:
 
-- sin bootstrap y scopes correctos, todo lo demas nace sobre bases inestables,
-- el framework ya tiene habilitadores suficientes para esa capa,
-- y permite que las siguientes fases no arrastren errores de lifetime o configuracion.
+- la base de lifetimes y configuracion ya quedo implementada,
+- ahora el gap principal es resolver acceso logico, canal nativo y semantica de plataforma,
+- y esa capa habilita despues execution, query, schema y transactions.
 
 ## Regla de actualizacion de esta bitacora
 

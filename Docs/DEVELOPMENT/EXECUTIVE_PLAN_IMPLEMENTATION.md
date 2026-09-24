@@ -105,6 +105,10 @@ Crear el nucleo de integracion que permita que Database exista como subsistema d
 - `src/Quantum/Database/Integration`
 - `src/Quantum/Database/Contracts`
 
+### Estado actual
+
+- `Implementado en DV-DB-001`
+
 ### Entregables minimos
 
 1. `DatabaseServiceProvider`
@@ -125,7 +129,21 @@ Crear el nucleo de integracion que permita que Database exista como subsistema d
 
 Se puede abrir codigo de conexion y ejecucion sin depender de estado global ni de `config()` dinamico.
 
+### Resultado del corte DV-DB-001
+
+1. `DatabaseServiceProvider` registrado por defecto en `Application`.
+2. `DatabaseCompositionRoot` disponible como singleton.
+3. `DatabaseConfiguration` tipada e inmutable.
+4. `DatabaseExecutionScope` creado y finalizado durante el lifecycle HTTP.
+5. `DatabaseContext` y `DatabaseScopeLifecycleManager` como base de runtime.
+6. `config/database.php` minimo en el skeleton.
+7. pruebas unitarias y feature en verde para bindings y scope.
+
 ## Fase 2 - Driver, Connection, Platform y Dialect
+
+### Estado actual
+
+- `Siguiente fase activa recomendada`
 
 ### Documentos fuente principales
 

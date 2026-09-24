@@ -31,15 +31,15 @@ El documento `00_DATABASE_PROJECT_CONTEXT.md` se usa como contexto base y no se 
 | Estado           | Cantidad |
 | ---------------- | -------: |
 | Operativo        |        0 |
-| Parcial          |        4 |
-| Pendiente        |       30 |
+| Parcial          |        5 |
+| Pendiente        |       29 |
 | Total bloques    |       34 |
 
 ## Bloques 01-34
 
 | Bloque | Area | Estado | Evidencia visible | Gap principal |
 | -----: | ---- | ------ | ----------------- | ------------- |
-| 01 | Arquitectura general | Pendiente | Documentacion completa en `database-lab/Docs` | Falta abrir el namespace `Quantum/Database` y traducir arquitectura a codigo real |
+| 01 | Arquitectura general | Parcial | `src/Quantum/Database/{Config,Runtime,Integration,Contracts}`, `DatabaseServiceProvider`, `DatabaseCompositionRoot`, `config/database.php`, pruebas unit y feature del scope | Falta cerrar el vertical de acceso, ejecucion, query, schema y transaction para que la arquitectura deje de ser solo fundacional |
 | 02 | Query Model y AST | Pendiente | No existe codigo en `src/Quantum/Database` | Falta modelo tipado, AST, validacion y normalizacion |
 | 03 | Semantic Query Engine | Pendiente | Sin evidencia suficiente | Falta resolucion semantica, graph y type inference |
 | 04 | Query Builder | Pendiente | Sin evidencia suficiente | Falta builder publico, expresiones, predicados y DML |
@@ -63,20 +63,20 @@ El documento `00_DATABASE_PROJECT_CONTEXT.md` se usa como contexto base y no se 
 | 22 | Security | Pendiente | Solo existen lineamientos documentales | Falta `DatabaseSecurityContext`, policy layer y proteccion de credenciales/queries |
 | 23 | Resilience | Pendiente | Sin evidencia suficiente | Faltan retry policies, circuit integration y failure handling |
 | 24 | Performance | Pendiente | Sin evidencia suficiente | Faltan budgets, benchmarks, compilation cache y memory controls |
-| 25 | Persistent Runtime | Parcial | Existen `RuntimeContext`, `ScopeManager`, `WorkerLifecycle` | Falta `DatabaseExecutionScope`, resource ownership y cleanup especifico de Database |
+| 25 | Persistent Runtime | Parcial | `DatabaseExecutionScope`, `DatabaseExecutionScopeFactory`, `DatabaseScopeLifecycleManager`, integracion con `onScopeStart/onScopeEnd`, `DatabaseRuntimeScopeTest` | Falta extender ownership a conexiones, transacciones, cursores y contextos ORM |
 | 26 | Multitenancy Integration | Pendiente | Sin evidencia suficiente | Faltan tenant-aware connections, context y schema/database isolation |
 | 27 | Advanced Capabilities | Pendiente | Sin evidencia suficiente | Faltan JSON, FTS, temporal, archival y capability system operativo |
 | 28 | Backup y Operations | Pendiente | Sin evidencia suficiente | Faltan backup/restore abstractions, diagnostics y maintenance services |
-| 29 | Testing | Parcial | El framework ya tiene `tests/Unit` y `tests/Feature` | Falta arquitectura de pruebas especifica para Database con motores reales |
+| 29 | Testing | Parcial | `DatabaseConfigurationBindingTest`, `DatabaseRuntimeScopeTest`, regresiones verdes de `RuntimeScopeTest` y `ApplicationBootstrapTest` | Faltan integration tests con motor real y matriz de pruebas por driver/query/schema/transaction |
 | 30 | Extensibility | Pendiente | Sin evidencia suficiente | Faltan extension points, manifests y registries de extensiones/plugins |
 | 31 | Developer Experience y API Publica | Pendiente | Existe patron general de facades y CLI en el framework | Falta surface publica Database, helper, facade, diagnostics y codegen |
-| 32 | VoltStack Integrations | Parcial | Existen container, config, http lifecycle, telemetry y console framework | Falta `DatabaseServiceProvider`, composition root e integraciones concretas |
+| 32 | VoltStack Integrations | Parcial | `DatabaseServiceProvider` registrado por defecto en `Application.php`, `DatabaseCompositionRoot`, config tipada, lifecycle HTTP inicial y `config/database.php` en skeleton | Faltan integraciones concretas con console, telemetry Database, CLI y runtime no HTTP |
 | 33 | Governance y Compatibility | Pendiente | Sin evidencia suficiente | Faltan politicas de compatibilidad, versioning y adapters de migracion |
 | 34 | Final Architecture y Migration from Legacy | Pendiente | Solo existe documentacion arquitectonica | Falta toolchain real de analisis, transformacion, shadowing y dual runtime |
 
 ## Habilitadores ya presentes en el framework
 
-Aunque `Quantum/Database` aun no existe como subsistema implementado, el framework ya aporta bases reutilizables:
+El framework ya aporta bases reutilizables y ahora cuenta ademas con una base inicial real de `Quantum/Database`:
 
 ### 1. Container y lifetimes
 
