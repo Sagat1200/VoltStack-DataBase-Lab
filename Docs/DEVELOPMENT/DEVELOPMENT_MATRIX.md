@@ -39,7 +39,7 @@ El documento `00_DATABASE_PROJECT_CONTEXT.md` se usa como contexto base y no se 
 
 | Bloque | Area | Estado | Evidencia visible | Gap principal |
 | -----: | ---- | ------ | ----------------- | ------------- |
-| 01 | Arquitectura general | Parcial | `src/Quantum/Database/{Config,Runtime,Integration,Contracts}`, `DatabaseServiceProvider`, `DatabaseCompositionRoot`, `config/database.php`, pruebas unit y feature del scope | Falta cerrar el vertical de acceso, ejecucion, query, schema y transaction para que la arquitectura deje de ser solo fundacional |
+| 01 | Arquitectura general | Parcial | `src/Quantum/Database/{Config,Runtime,Integration,Contracts,Connection,Driver,Platform,Dialect}`, `DatabaseServiceProvider`, `DatabaseCompositionRoot`, `ConnectionManager`, `PdoDriver`, `SqlitePlatform`, `SqliteDialect`, `config/database.php`, pruebas unit y feature del scope/conexion | Falta cerrar el vertical de ejecucion, query, schema y transaction para que la arquitectura deje de ser solo fundacional |
 | 02 | Query Model y AST | Pendiente | No existe codigo en `src/Quantum/Database` | Falta modelo tipado, AST, validacion y normalizacion |
 | 03 | Semantic Query Engine | Pendiente | Sin evidencia suficiente | Falta resolucion semantica, graph y type inference |
 | 04 | Query Builder | Pendiente | Sin evidencia suficiente | Falta builder publico, expresiones, predicados y DML |
@@ -63,14 +63,14 @@ El documento `00_DATABASE_PROJECT_CONTEXT.md` se usa como contexto base y no se 
 | 22 | Security | Pendiente | Solo existen lineamientos documentales | Falta `DatabaseSecurityContext`, policy layer y proteccion de credenciales/queries |
 | 23 | Resilience | Pendiente | Sin evidencia suficiente | Faltan retry policies, circuit integration y failure handling |
 | 24 | Performance | Pendiente | Sin evidencia suficiente | Faltan budgets, benchmarks, compilation cache y memory controls |
-| 25 | Persistent Runtime | Parcial | `DatabaseExecutionScope`, `DatabaseExecutionScopeFactory`, `DatabaseScopeLifecycleManager`, integracion con `onScopeStart/onScopeEnd`, `DatabaseRuntimeScopeTest` | Falta extender ownership a conexiones, transacciones, cursores y contextos ORM |
+| 25 | Persistent Runtime | Parcial | `DatabaseExecutionScope`, `DatabaseExecutionScopeFactory`, `DatabaseScopeLifecycleManager`, integracion con `onScopeStart/onScopeEnd`, desconexion de conexiones al cerrar scope, `DatabaseRuntimeScopeTest`, `DatabaseSqliteConnectionTest` | Falta extender ownership a transacciones, cursores y contextos ORM |
 | 26 | Multitenancy Integration | Pendiente | Sin evidencia suficiente | Faltan tenant-aware connections, context y schema/database isolation |
 | 27 | Advanced Capabilities | Pendiente | Sin evidencia suficiente | Faltan JSON, FTS, temporal, archival y capability system operativo |
 | 28 | Backup y Operations | Pendiente | Sin evidencia suficiente | Faltan backup/restore abstractions, diagnostics y maintenance services |
-| 29 | Testing | Parcial | `DatabaseConfigurationBindingTest`, `DatabaseRuntimeScopeTest`, regresiones verdes de `RuntimeScopeTest` y `ApplicationBootstrapTest` | Faltan integration tests con motor real y matriz de pruebas por driver/query/schema/transaction |
+| 29 | Testing | Parcial | `DatabaseConfigurationBindingTest`, `DatabaseConnectionManagerTest`, `DatabaseRuntimeScopeTest`, `DatabaseSqliteConnectionTest`, regresiones verdes de `RuntimeScopeTest` y `ApplicationBootstrapTest` | Faltan matriz de pruebas por driver adicional, query, schema y transaction |
 | 30 | Extensibility | Pendiente | Sin evidencia suficiente | Faltan extension points, manifests y registries de extensiones/plugins |
 | 31 | Developer Experience y API Publica | Pendiente | Existe patron general de facades y CLI en el framework | Falta surface publica Database, helper, facade, diagnostics y codegen |
-| 32 | VoltStack Integrations | Parcial | `DatabaseServiceProvider` registrado por defecto en `Application.php`, `DatabaseCompositionRoot`, config tipada, lifecycle HTTP inicial y `config/database.php` en skeleton | Faltan integraciones concretas con console, telemetry Database, CLI y runtime no HTTP |
+| 32 | VoltStack Integrations | Parcial | `DatabaseServiceProvider` registrado por defecto en `Application.php`, `DatabaseCompositionRoot`, `ConnectionManagerInterface`, config tipada, lifecycle HTTP inicial, cleanup de conexiones y `config/database.php` en skeleton | Faltan integraciones concretas con console, telemetry Database, CLI y runtime no HTTP |
 | 33 | Governance y Compatibility | Pendiente | Sin evidencia suficiente | Faltan politicas de compatibilidad, versioning y adapters de migracion |
 | 34 | Final Architecture y Migration from Legacy | Pendiente | Solo existe documentacion arquitectonica | Falta toolchain real de analisis, transformacion, shadowing y dual runtime |
 

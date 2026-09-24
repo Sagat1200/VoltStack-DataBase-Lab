@@ -143,7 +143,7 @@ Se puede abrir codigo de conexion y ejecucion sin depender de estado global ni d
 
 ### Estado actual
 
-- `Siguiente fase activa recomendada`
+- `Implementado en DV-DB-002`
 
 ### Documentos fuente principales
 
@@ -191,7 +191,21 @@ Cerrar la capa de acceso logico y la separacion formal entre canal nativo, seman
 
 El subsistema puede resolver una conexion logica segura dentro del scope y liberarla correctamente.
 
+### Resultado del corte DV-DB-002
+
+1. contracts base de driver, native connection, connection, dialect y platform.
+2. `ConnectionDefinition` y `ConnectionDefinitionRegistry`.
+3. `DriverRegistry` con ruta inicial `PDO + SQLite`.
+4. `ConnectionManager` scoped con cache por scope.
+5. `SqlitePlatform` y `SqliteDialect` como primer camino operativo.
+6. desconexion de conexiones al cerrar la request.
+7. pruebas unitarias y feature con SQLite real en verde.
+
 ## Fase 3 - Execution Engine minimo
+
+### Estado actual
+
+- `Siguiente fase activa recomendada`
 
 ### Documentos fuente principales
 
