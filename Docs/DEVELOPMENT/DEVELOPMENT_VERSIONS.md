@@ -14,9 +14,9 @@ Sirve como control operativo de:
 
 ## Corte actual
 
-- Fecha de actualizacion: `2026-09-23`
-- Estado general: `Bootstrap, acceso, Execution, Query, Schema y Migrations MVP de Database implementados`
-- Foco del corte: `cerrar DV-DB-005 con SchemaManager, SchemaCompiler, MigrationRepository y MigrationRunner`
+- Fecha de actualizacion: `2026-09-24`
+- Estado general: `Bootstrap, acceso, Execution, Query, Schema, Migrations, Transaction, surface publica minima, ORM minimo y types ORM base de Database implementados`
+- Foco del corte: `cerrar DV-DB-009 con type registry ORM, casting extensible minimo y pruebas feature tipadas`
 
 ## Versionado de desarrollo
 
@@ -168,33 +168,58 @@ Las siguientes entradas representan el orden sugerido de ejecucion. No deben mar
 
 ### DV-DB-006
 
-- Estado: `Planificado`
+- Estado: `Implementado`
 - Bloque documental: `164-175`
 - Alcance objetivo:
   - introducir `TransactionManager`,
   - modelar estados transaccionales,
   - y cerrar la integracion con execution, schema y lifecycle.
-- Evidencia esperada:
-  - `src/Quantum/Database/Transaction`
-  - pruebas de commit, rollback, nested transaction y savepoints
+- Evidencia principal:
+  - `vendor/voltstack/framework/src/Quantum/Database/Contracts/TransactionManagerInterface.php`
+  - `vendor/voltstack/framework/src/Quantum/Database/Transaction/{TransactionState,TransactionId,TransactionException,TransactionContext,TransactionManager}.php`
+  - actualizacion de `vendor/voltstack/framework/src/Quantum/Database/Integration/DatabaseServiceProvider.php`
+  - actualizacion de `vendor/voltstack/framework/src/Quantum/Database/Runtime/DatabaseScopeLifecycleManager.php`
+  - `vendor/voltstack/framework/tests/Unit/DatabaseTransactionContextTest.php`
+  - `vendor/voltstack/framework/tests/Feature/DatabaseTransactionManagerTest.php`
+- Resultado:
+  - `Quantum/Database` ya modela atomicidad de forma explicita mediante `TransactionManager`,
+  - existen commit, rollback, rollback-only y nested transactions basadas en savepoints,
+  - el cleanup del scope revierte automaticamente transacciones abiertas antes de desconectar conexiones,
+  - y Query/Schema/Migrations ya pueden ejecutarse dentro de una frontera transaccional real.
 
 ### DV-DB-007
 
-- Estado: `Planificado`
+- Estado: `Implementado`
 - Bloque documental: `216-226`, `302-309`
 - Alcance objetivo:
   - exponer API publica minima,
   - `DB` facade contextual,
   - comandos CLI base,
   - y telemetria inicial del subsistema.
-- Evidencia esperada:
-  - `src/Quantum/Database/Support`
-  - `src/Quantum/Database/Integration`
-  - tests feature de CLI y facade
+- Evidencia principal:
+  - `vendor/voltstack/framework/src/Quantum/Database/Contracts/DatabaseInterface.php`
+  - `vendor/voltstack/framework/src/Quantum/Database/Database.php`
+  - `vendor/voltstack/framework/src/Quantum/Database/Support/DatabaseStatus.php`
+  - `vendor/voltstack/framework/src/Quantum/Database/Telemetry/DatabaseTelemetryEmitter.php`
+  - actualizacion de:
+    - `vendor/voltstack/framework/src/Quantum/Database/Execution/StatementExecutor.php`
+    - `vendor/voltstack/framework/src/Quantum/Database/Transaction/TransactionManager.php`
+    - `vendor/voltstack/framework/src/Quantum/Database/Migration/{MigrationRepository,MigrationRunner}.php`
+    - `vendor/voltstack/framework/src/Quantum/Database/Integration/DatabaseServiceProvider.php`
+    - `vendor/voltstack/framework/src/Quantum/Console/ConsoleApplication.php`
+  - `vendor/voltstack/framework/src/Quantum/Console/Commands/{DatabaseStatusCommand,DatabaseMigrateCommand,DatabaseRollbackCommand}.php`
+  - `vendor/voltstack/framework/src/Quantum/Facades/{DB,Schema}.php`
+  - `vendor/voltstack/framework/tests/Feature/{DatabasePublicApiFacadeTest,DatabaseConsoleCommandsTest,DatabaseTelemetryFeatureTest}.php`
+- Resultado:
+  - `Quantum/Database` ya expone un servicio publico tipado para `connection/query/table/schema/transaction/migrate/rollback/status`,
+  - las facades `DB` y `Schema` resuelven servicios scoped sin introducir estado mutable estatico,
+  - el subsistema ya es operable por CLI mediante `database:status`, `database:migrate` y `database:rollback`,
+  - la telemetria minima del subsistema ya emite senales de query, transaction y migration usando `Quantum/Telemetry`,
+  - y la integracion queda validada con pruebas feature dedicadas y regresiones verdes del vertical Database existente.
 
 ### DV-DB-008
 
-- Estado: `Planificado`
+- Estado: `Implementado`
 - Bloque documental: `112-163`
 - Alcance objetivo:
   - abrir ORM minimo,
@@ -203,10 +228,47 @@ Las siguientes entradas representan el orden sugerido de ejecucion. No deben mar
   - hydration,
   - persistence planning,
   - y base de relationships.
-- Evidencia esperada:
+- Evidencia principal:
   - `src/Quantum/Database/ORM`
-  - `src/Quantum/Database/Hydration`
-  - pruebas unitarias e integracion ORM
+  - `vendor/voltstack/framework/src/Quantum/Database/ORM/Attributes/{Entity,Table,Id,Column}.php`
+  - `vendor/voltstack/framework/src/Quantum/Database/ORM/Metadata/{EntityFieldMetadata,EntityMetadata,EntityMetadataRegistry}.php`
+  - `vendor/voltstack/framework/src/Quantum/Database/ORM/{EntityKey,EntityState,IdentityMap,UnitOfWork,EntityQuery,EntityRepository,EntityManager,Model}.php`
+  - `vendor/voltstack/framework/src/Quantum/Database/ORM/Contracts/{EntityManagerInterface,EntityRepositoryInterface}.php`
+  - actualizacion de:
+    - `vendor/voltstack/framework/src/Quantum/Database/Contracts/DatabaseInterface.php`
+    - `vendor/voltstack/framework/src/Quantum/Database/Database.php`
+    - `vendor/voltstack/framework/src/Quantum/Database/Integration/DatabaseServiceProvider.php`
+  - `vendor/voltstack/framework/tests/Feature/DatabaseOrmFeatureTest.php`
+- Resultado:
+  - `Quantum/Database` ya expone un ORM minimo apoyado en el mismo engine de Query, Schema y Transaction existente, sin abrir un runtime paralelo,
+  - existe una superficie inicial con atributos `#[Entity]`, `#[Table]`, `#[Id]`, `#[Column]`, metadata registry, `EntityManager`, repository por entidad y `Model` API minima,
+  - `IdentityMap` y `UnitOfWork` quedan scoped para mantener seguridad en runtime persistente y aislamiento por request/scope,
+  - `flush()` reutiliza `TransactionManagerInterface` y las lecturas/escrituras delegan al `DatabaseQueryManager` ya operativo,
+  - y el vertical ORM queda validado con pruebas feature reales sobre SQLite para metadata, persistencia, repository, `Model` e identity reuse.
+
+### DV-DB-009
+
+- Estado: `Implementado`
+- Bloque documental: `115-120`
+- Alcance objetivo:
+  - abrir type registry ORM minimo,
+  - extender `#[Column]` con metadata de tipo declarativa,
+  - mejorar hydration/persistencia para conversiones tipadas,
+  - y validar round-trip tipado real sobre SQLite.
+- Evidencia principal:
+  - `vendor/voltstack/framework/src/Quantum/Database/ORM/Types/{TypeRegistry,ScalarTypeHandler,DateTimeImmutableTypeHandler,JsonTypeHandler,BackedEnumTypeHandler}.php`
+  - `vendor/voltstack/framework/src/Quantum/Database/ORM/Types/Contracts/TypeHandlerInterface.php`
+  - actualizacion de:
+    - `vendor/voltstack/framework/src/Quantum/Database/ORM/Attributes/Column.php`
+    - `vendor/voltstack/framework/src/Quantum/Database/ORM/Metadata/{EntityFieldMetadata,EntityMetadata,EntityMetadataRegistry}.php`
+    - `vendor/voltstack/framework/src/Quantum/Database/ORM/{EntityQuery,EntityManager}.php`
+    - `vendor/voltstack/framework/src/Quantum/Database/Integration/DatabaseServiceProvider.php`
+  - `vendor/voltstack/framework/tests/Feature/DatabaseOrmFeatureTest.php`
+- Resultado:
+  - `Quantum/Database` ya dispone de un `TypeRegistry` ORM minimo para centralizar conversiones en vez de depender de casts ad hoc dispersos,
+  - `#[Column]` ahora puede declarar `type` y `enumType`, permitiendo metadata ORM mas expresiva sin abrir todavia el sistema completo de custom types,
+  - hydration, criteria de `EntityQuery` y escrituras de persistencia convergen en la misma conversion tipada para scalar, `DateTimeImmutable`, `BackedEnum` y JSON,
+  - y el vertical ORM queda validado con pruebas feature reales sobre SQLite para round-trip tipado y regresion del vertical Database existente.
 
 ## Estado consolidado del sistema Database
 
@@ -257,36 +319,54 @@ Las siguientes entradas representan el orden sugerido de ejecucion. No deben mar
    - `MigrationRepository`,
    - `MigrationRunner`,
    - apply/rollback real sobre SQLite.
+9. Transaction MVP con:
+   - `TransactionManager`,
+   - `TransactionContext`,
+   - `TransactionState`,
+   - rollback-only,
+   - nested savepoints,
+   - rollback automatico al cerrar scope.
+10. Surface publica minima con:
+   - `DatabaseInterface` y `Database`,
+   - `DatabaseStatus`,
+   - facades `DB` y `Schema`,
+   - comandos CLI `database:status`, `database:migrate`, `database:rollback`,
+   - telemetria minima de query, transaction y migration.
+11. Base de types ORM con:
+    - `TypeRegistry`,
+    - handlers para scalar, `DateTimeImmutable`, `BackedEnum` y JSON,
+    - `#[Column(type: ..., enumType: ...)]`,
+    - conversion consistente en hydration, query criteria y writes ORM.
 
 ### Parcial o indirectamente disponible
 
 1. Runtime persistente general del framework ya conectado a Database en lifecycle HTTP.
-2. Telemetria general del framework reusable por Database, aunque aun no instrumentada desde el subsistema.
-3. CLI y bootstrap general listos para la siguiente fase de conexion y ejecucion.
+2. Telemetria general del framework reusable y ya consumida por Database en la primera capa de instrumentacion.
+3. CLI y bootstrap general del framework ya reutilizados por Database, aunque aun falta ampliar la superficie operativa mas alla del set minimo.
 
 ### Aun no desarrollado con evidencia suficiente
 
-1. Todo el codigo operativo de `Quantum/Database`.
-2. Driver, Connection y Execution reales.
-3. Query, Schema, Migration y Transaction systems.
-4. API publica Database.
-5. ORM, Hydration y Relationships.
-6. Security, Resilience, Plugin y Legacy migration runtime.
+1. Relationships, value objects avanzados, hydration planificada y surface ORM ampliada.
+2. Security, Resilience, Plugin y Legacy migration runtime.
+3. capabilities avanzadas, pagination, batch/streaming y distribucion.
 
 ## Siguiente bloque recomendado
 
 ### Opcion recomendada posterior
 
-Abrir `Transaction System` minimo:
+Profundizar el vertical ORM posterior a `DV-DB-009`:
 
-- `164_DATABASE_TRANSACTION_ARCHITECTURE.md`
-- `165-175`
+- relationships y relationship loading,
+- value objects y custom types mas ricos,
+- hydration planificada y caches,
+- repository factory con DI,
+- y politicas de persistencia mas ricas sobre el mismo engine existente.
 
 Motivo:
 
-- lifetimes, configuracion, acceso logico, ejecucion, query y schema/migrations MVP ya quedaron resueltos,
-- ahora el gap principal es modelar atomicidad y estados transaccionales del subsistema,
-- y esa capa habilita despues CLI operativa y endurecimiento del runtime.
+- el ORM minimo ya converge sobre `DatabaseQueryManager` y `TransactionManagerInterface`,
+- la base scoped (`EntityManager`, `IdentityMap`, `UnitOfWork`) y el type layer minimo ya quedaron validados en runtime real,
+- y el siguiente gap estructural dominante ya no es abrir ORM, sino ampliar esa base sin romper el aislamiento del runtime persistente.
 
 ## Regla de actualizacion de esta bitacora
 

@@ -264,10 +264,6 @@ El subsistema puede ejecutar una orden compilada con ownership explicito de recu
 
 - `Implementado en DV-DB-004`
 
-### Estado actual
-
-- `Siguiente fase activa recomendada`
-
 ### Documentos fuente principales
 
 - `23_DATABASE_QUERY_ARCHITECTURE.md`
@@ -372,7 +368,7 @@ La base puede crearse y evolucionar mediante Database propio, no via SQL manual 
 
 ### Estado actual
 
-- `Siguiente fase activa recomendada`
+- `Implementado en DV-DB-006`
 
 ### Documentos fuente principales
 
@@ -406,7 +402,20 @@ Separar claramente transaccion, request scope y execution.
 
 La atomicidad deja de ser implicita y pasa a estar modelada por contratos del subsistema.
 
+### Resultado del corte DV-DB-006
+
+1. `TransactionManagerInterface`, `TransactionManager` y `TransactionContext`.
+2. `TransactionId`, `TransactionState` y `TransactionException`.
+3. commit, rollback y rollback-only.
+4. nested transactions basadas en savepoints para SQLite.
+5. rollback automatico de transacciones abiertas al cerrar el scope.
+6. pruebas unitarias y feature en verde para contexto, commit/rollback y cleanup por scope.
+
 ## Fase 7 - API publica, CLI y Telemetria minima
+
+### Estado actual
+
+- `Implementado en DV-DB-007`
 
 ### Documentos fuente principales
 
@@ -428,13 +437,12 @@ Exponer una superficie usable sin romper las reglas del nucleo.
 ### Entregables minimos
 
 1. facade `DB` contextual
-2. helper limitado
+2. servicio publico `Database`
 3. comandos CLI basicos:
    - status
    - migrate
    - rollback
-   - doctor
-4. eventos o senales minimas de telemetria
+4. senales minimas de telemetria
 
 ### Pruebas minimas
 
@@ -445,6 +453,17 @@ Exponer una superficie usable sin romper las reglas del nucleo.
 ### Criterio de salida
 
 Database V1 es consumible por aplicacion, runtime y CLI con ergonomia minima viable.
+
+### Resultado del corte DV-DB-007
+
+1. `DatabaseInterface` y `Database` como surface publica tipada del subsistema.
+2. `DatabaseStatus` como DTO publico minimo de diagnostico operacional.
+3. facades `DB` y `Schema` resolviendo servicios scoped sin estado mutable estatico.
+4. comandos `database:status`, `database:migrate` y `database:rollback`.
+5. `DatabaseServiceProvider` exponiendo comandos y bindings publicos.
+6. `ConsoleApplication` cargando comandos declarados por providers ya registrados.
+7. `DatabaseTelemetryEmitter` e instrumentacion minima de query, transaction y migration sobre `Quantum/Telemetry`.
+8. pruebas feature dedicadas para API publica/facades, CLI y telemetria.
 
 ## Fase 8 - ORM minimo posterior a V1
 
@@ -472,7 +491,29 @@ Abrir ORM solo despues de que el nucleo ya exista y sea utilizable.
 
 ### Estado
 
-- `Post-V1 recomendado`
+- `Implementado en DV-DB-008`
+
+### Resultado del corte DV-DB-008
+
+1. atributos ORM minimos `#[Entity]`, `#[Table]`, `#[Id]` y `#[Column]`.
+2. metadata base con `EntityFieldMetadata`, `EntityMetadata` y `EntityMetadataRegistry`.
+3. runtime ORM scoped con `IdentityMap`, `UnitOfWork` y `EntityManager`.
+4. repository base (`EntityRepository`) y query layer (`EntityQuery`) reutilizando `DatabaseQueryManager`.
+5. `Model` API minima resolviendo el `EntityManager` scoped desde `Application`.
+6. extension de `DatabaseInterface` y `Database` con `entityManager()` y `repository(...)`.
+7. integracion del vertical ORM en `DatabaseServiceProvider`.
+8. prueba feature `DatabaseOrmFeatureTest` cubriendo metadata, persistencia, repository, model API e identity reuse sobre SQLite.
+
+### Resultado del corte DV-DB-009
+
+1. `TypeRegistry` ORM minimo y contrato `TypeHandlerInterface`.
+2. handlers base para `int`, `float`, `bool`, `string`, `datetime_immutable`, `json` y `enum`.
+3. `#[Column]` extendido con `type` y `enumType`.
+4. metadata ORM resolviendo y preservando tipo de campo y enum class.
+5. hydration y persistence usando conversion tipada consistente en lugar de casts ad hoc dispersos.
+6. `EntityQuery::where(...)` convirtiendo criterios al valor de base de datos correspondiente.
+7. `DatabaseServiceProvider` exponiendo `TypeRegistry` como singleton compartible.
+8. `DatabaseOrmFeatureTest` ampliado con round-trip real de `DateTimeImmutable`, `BackedEnum` y JSON sobre SQLite.
 
 ## Roadmap resumido
 

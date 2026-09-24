@@ -195,9 +195,9 @@ El orden recomendado para construir `Quantum/Database` es:
 ### Prioridad 5: API publica minima
 
 1. `DB` facade contextual
-2. helper limitado
-3. comandos CLI basicos
-4. telemetria basica
+2. servicio publico `Database`
+3. comandos CLI basicos abriendo/cerrando su propio `ExecutionScope`
+4. telemetria basica en componentes que ya poseen el lifecycle real de query/transaction/migration
 
 ### Prioridad 6: ORM y capas avanzadas
 
@@ -257,8 +257,11 @@ Todo trabajo sobre `23-111` debe respetar:
 Todo trabajo sobre `112-163` debe respetar:
 
 - integracion sobre el mismo Query/Execution Engine,
+- metadata inmutable o singleton-safe y estado mutable ORM siempre scoped,
 - ausencia de SQL dentro del ORM,
 - ausencia de estado compartido entre requests,
+- conversion de tipos centralizada en metadata/type handlers, no en casts ad hoc repartidos entre `EntityManager`, `Repository` o `Model`,
+- `Model` y repositories resolviendo el `EntityManager` del scope activo, sin contexto mutable estatico,
 - y pruebas separadas por metadata, hydration y persistence.
 
 ### Security, Telemetry, CLI y Plugins
@@ -266,6 +269,7 @@ Todo trabajo sobre `112-163` debe respetar:
 Todo trabajo sobre `216-340` debe respetar:
 
 - capas finas sobre servicios existentes,
+- facades y comandos resolviendo servicios scoped, nunca conservando estado mutable estatico,
 - fail-soft cuando corresponda,
 - diagnosticos explicables,
 - y compatibilidad retroactiva observada por contrato.
