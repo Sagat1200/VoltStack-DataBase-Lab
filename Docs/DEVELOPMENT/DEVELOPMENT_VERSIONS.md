@@ -15,8 +15,8 @@ Sirve como control operativo de:
 ## Corte actual
 
 - Fecha de actualizacion: `2026-09-23`
-- Estado general: `Bootstrap, acceso, Execution y Query MVP de Database implementados`
-- Foco del corte: `cerrar DV-DB-004 con Query Model, AST minimo, Query Builder y SQL compiler basico`
+- Estado general: `Bootstrap, acceso, Execution, Query, Schema y Migrations MVP de Database implementados`
+- Foco del corte: `cerrar DV-DB-005 con SchemaManager, SchemaCompiler, MigrationRepository y MigrationRunner`
 
 ## Versionado de desarrollo
 
@@ -145,17 +145,26 @@ Las siguientes entradas representan el orden sugerido de ejecucion. No deben mar
 
 ### DV-DB-005
 
-- Estado: `Planificado`
+- Estado: `Implementado`
 - Bloque documental: `87-111`
 - Alcance objetivo:
   - construir Schema Model / Builder minimo,
   - implementar migration repository, discovery y execution,
   - y habilitar CLI inicial de schema/migration.
-- Evidencia esperada:
-  - `src/Quantum/Database/Schema`
-  - `src/Quantum/Database/Migration`
-  - comandos CLI basicos
-  - pruebas feature de migracion
+- Evidencia principal:
+  - `vendor/voltstack/framework/src/Quantum/Database/Schema/Model/{ColumnDefinition,CreateTableDefinition,DropTableDefinition}.php`
+  - `vendor/voltstack/framework/src/Quantum/Database/Schema/Builder/{ColumnBlueprint,TableBlueprint}.php`
+  - `vendor/voltstack/framework/src/Quantum/Database/Schema/Compiler/{CompiledSchemaOperation,SchemaCompiler}.php`
+  - `vendor/voltstack/framework/src/Quantum/Database/Schema/SchemaManager.php`
+  - `vendor/voltstack/framework/src/Quantum/Database/Migration/{MigrationInterface,DiscoveredMigration,MigrationDiscovery,MigrationRepository,MigrationRunner}.php`
+  - actualizacion de `vendor/voltstack/framework/src/Quantum/Database/Integration/DatabaseServiceProvider.php`
+  - `vendor/voltstack/framework/tests/Unit/DatabaseSchemaCompilerTest.php`
+  - `vendor/voltstack/framework/tests/Feature/DatabaseMigrationRunnerTest.php`
+- Resultado:
+  - `Quantum/Database` ya puede describir y ejecutar creacion/eliminacion de tablas sobre el mismo runtime Database,
+  - existe un repositorio persistente de migraciones en `quantum_migrations`,
+  - las migraciones pueden descubrirse desde `database/migrations`, aplicarse y revertirse por batch,
+  - y el subsistema deja de depender de SQL manual disperso para el primer flujo de evolucion estructural.
 
 ### DV-DB-006
 
@@ -240,6 +249,14 @@ Las siguientes entradas representan el orden sugerido de ejecucion. No deben mar
    - `DatabaseQueryManager`,
    - `SelectQueryBuilder`,
    - ejecucion real por builder sobre SQLite.
+8. Schema y Migrations MVP con:
+   - `SchemaManager`,
+   - `SchemaCompiler`,
+   - `TableBlueprint`,
+   - `MigrationDiscovery`,
+   - `MigrationRepository`,
+   - `MigrationRunner`,
+   - apply/rollback real sobre SQLite.
 
 ### Parcial o indirectamente disponible
 
@@ -260,18 +277,16 @@ Las siguientes entradas representan el orden sugerido de ejecucion. No deben mar
 
 ### Opcion recomendada posterior
 
-Abrir `Schema + Migrations MVP`:
+Abrir `Transaction System` minimo:
 
-- `87_DATABASE_SCHEMA_ARCHITECTURE.md`
-- `88-100`
-- `101_DATABASE_MIGRATION_ARCHITECTURE.md`
-- `102-111`
+- `164_DATABASE_TRANSACTION_ARCHITECTURE.md`
+- `165-175`
 
 Motivo:
 
-- lifetimes, configuracion, acceso logico, ejecucion y Query MVP ya quedaron resueltos,
-- ahora el gap principal es evolucionar estructura sin depender de SQL disperso,
-- y esa capa habilita despues transacciones y CLI de operaciones.
+- lifetimes, configuracion, acceso logico, ejecucion, query y schema/migrations MVP ya quedaron resueltos,
+- ahora el gap principal es modelar atomicidad y estados transaccionales del subsistema,
+- y esa capa habilita despues CLI operativa y endurecimiento del runtime.
 
 ## Regla de actualizacion de esta bitacora
 

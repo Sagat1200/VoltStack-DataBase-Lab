@@ -321,7 +321,7 @@ Existe un vertical completo `builder -> compiler -> execution` para operaciones 
 
 ### Estado actual
 
-- `Siguiente fase activa recomendada`
+- `Implementado en DV-DB-005`
 
 ### Documentos fuente principales
 
@@ -358,7 +358,21 @@ Permitir evolucion de estructura con modelo, compiler y ejecucion coherentes con
 
 La base puede crearse y evolucionar mediante Database propio, no via SQL manual disperso.
 
+### Resultado del corte DV-DB-005
+
+1. `ColumnDefinition`, `CreateTableDefinition` y `DropTableDefinition`.
+2. `TableBlueprint` y `ColumnBlueprint` como API minima de schema.
+3. `SchemaCompiler` y `SchemaManager`.
+4. `MigrationInterface`, `MigrationDiscovery`, `MigrationRepository` y `MigrationRunner`.
+5. repositorio persistente de migraciones en `quantum_migrations`.
+6. apply y rollback de migraciones desde `database/migrations`.
+7. pruebas unitarias y feature en verde con SQLite real.
+
 ## Fase 6 - Transaction System minimo
+
+### Estado actual
+
+- `Siguiente fase activa recomendada`
 
 ### Documentos fuente principales
 
