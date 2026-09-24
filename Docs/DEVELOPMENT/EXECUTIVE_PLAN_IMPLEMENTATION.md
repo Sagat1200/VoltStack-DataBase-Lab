@@ -205,7 +205,7 @@ El subsistema puede resolver una conexion logica segura dentro del scope y liber
 
 ### Estado actual
 
-- `Siguiente fase activa recomendada`
+- `Implementado en DV-DB-003`
 
 ### Documentos fuente principales
 
@@ -248,7 +248,21 @@ Establecer la frontera entre conocimiento compilado y estado runtime mutable.
 
 El subsistema puede ejecutar una orden compilada con ownership explicito de recursos.
 
+### Resultado del corte DV-DB-003
+
+1. `CompiledDatabaseCommand` como entrada runtime de ejecucion.
+2. `RuntimeBindingSet` para bindings separados y normalizados.
+3. `StatementExecutor` sobre la capa de conexion existente.
+4. `QueryExecutor` como orquestador minimo sobre statement execution.
+5. `DatabaseResult` desacoplado del resultado nativo de PDO.
+6. `ExecutionFailure` y `ExecutionException` para error handling tipado inicial.
+7. pruebas unitarias y feature con SQLite real en verde.
+
 ## Fase 4 - Query MVP
+
+### Estado actual
+
+- `Siguiente fase activa recomendada`
 
 ### Documentos fuente principales
 

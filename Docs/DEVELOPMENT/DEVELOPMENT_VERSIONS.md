@@ -15,8 +15,8 @@ Sirve como control operativo de:
 ## Corte actual
 
 - Fecha de actualizacion: `2026-09-23`
-- Estado general: `Base de bootstrap y capa inicial de acceso Database implementadas`
-- Foco del corte: `cerrar DV-DB-002 con driver PDO, connection manager, platform y dialect sobre SQLite`
+- Estado general: `Bootstrap, acceso y Execution Engine minimo de Database implementados`
+- Foco del corte: `cerrar DV-DB-003 con query executor, statement executor, result model y errores normalizados`
 
 ## Versionado de desarrollo
 
@@ -101,15 +101,24 @@ Las siguientes entradas representan el orden sugerido de ejecucion. No deben mar
 
 ### DV-DB-003
 
-- Estado: `Planificado`
+- Estado: `Implementado`
 - Bloque documental: `76-86`
 - Alcance objetivo:
   - abrir el `Execution Engine`,
   - introducir contextos de ejecucion, statement/result y error model,
   - y asegurar cleanup determinista en runtime persistente.
-- Evidencia esperada:
-  - `src/Quantum/Database/Execution`
-  - pruebas de lifecycle, error y resource cleanup
+- Evidencia principal:
+  - `vendor/voltstack/framework/src/Quantum/Database/Contracts/{QueryExecutorInterface,StatementExecutorInterface}.php`
+  - `vendor/voltstack/framework/src/Quantum/Database/Execution/{DatabaseResultType,CompiledDatabaseCommand,RuntimeBindingSet,ExecutionContext,ExecutionFailure,ExecutionException,DatabaseResult,StatementExecutor,QueryExecutor}.php`
+  - actualizacion de `vendor/voltstack/framework/src/Quantum/Database/Integration/DatabaseServiceProvider.php`
+  - `vendor/voltstack/framework/tests/Unit/DatabaseExecutionPrimitivesTest.php`
+  - `vendor/voltstack/framework/tests/Feature/DatabaseQueryExecutionTest.php`
+- Resultado:
+  - `Quantum/Database` ya puede ejecutar SQL compilado sobre la capa de conexion existente,
+  - `QueryExecutor` y `StatementExecutor` quedan registrados por scope,
+  - los bindings runtime se normalizan sin interpolacion SQL,
+  - el resultado runtime queda desacoplado del `PDOStatement`,
+  - y los errores de ejecucion se propagan mediante un `ExecutionException` con `ExecutionFailure` tipado.
 
 ### DV-DB-004
 
@@ -207,6 +216,13 @@ Las siguientes entradas representan el orden sugerido de ejecucion. No deben mar
    - `SqlitePlatform`,
    - `SqliteDialect`,
    - pruebas con SQLite real.
+6. Execution Engine minimo con:
+   - `CompiledDatabaseCommand`,
+   - `RuntimeBindingSet`,
+   - `StatementExecutor`,
+   - `QueryExecutor`,
+   - `DatabaseResult`,
+   - `ExecutionException`.
 
 ### Parcial o indirectamente disponible
 
@@ -227,22 +243,22 @@ Las siguientes entradas representan el orden sugerido de ejecucion. No deben mar
 
 ### Opcion recomendada posterior
 
-Abrir la frontera de ejecucion:
+Abrir el vertical minimo de Query:
 
-- `76_DATABASE_EXECUTION_ENGINE_ARCHITECTURE.md`
-- `77_DATABASE_QUERY_EXECUTOR_SYSTEM.md`
-- `78_DATABASE_STATEMENT_EXECUTION_SYSTEM.md`
-- `79_DATABASE_PREPARED_STATEMENT_SYSTEM.md`
-- `80_DATABASE_PARAMETER_BINDING_SYSTEM.md`
-- `81_DATABASE_RESULT_SYSTEM.md`
-- `82_DATABASE_RESULT_CURSOR_SYSTEM.md`
-- `85_DATABASE_EXECUTION_ERROR_SYSTEM.md`
+- `23_DATABASE_QUERY_ARCHITECTURE.md`
+- `24_DATABASE_QUERY_MODEL.md`
+- `25_DATABASE_QUERY_AST_SYSTEM.md`
+- `26_DATABASE_QUERY_AST_NODE_MODEL.md`
+- `43_DATABASE_QUERY_BUILDER_ARCHITECTURE.md`
+- `44-54`
+- `66_DATABASE_SQL_COMPILER_ARCHITECTURE.md`
+- `67-75`
 
 Motivo:
 
-- lifetimes, configuracion y acceso logico ya quedaron resueltos en una primera version,
-- ahora el gap principal es ejecutar operaciones con ownership explicito de statements, results y errores,
-- y esa capa habilita despues query, schema y transactions.
+- lifetimes, configuracion, acceso logico y ejecucion minima ya quedaron resueltos,
+- ahora el gap principal es dejar de depender de SQL manual como entrada directa,
+- y esa capa habilita despues schema, migrations y transactions sobre el mismo runtime.
 
 ## Regla de actualizacion de esta bitacora
 

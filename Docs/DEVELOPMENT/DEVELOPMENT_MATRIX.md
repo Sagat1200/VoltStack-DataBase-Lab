@@ -39,13 +39,13 @@ El documento `00_DATABASE_PROJECT_CONTEXT.md` se usa como contexto base y no se 
 
 | Bloque | Area | Estado | Evidencia visible | Gap principal |
 | -----: | ---- | ------ | ----------------- | ------------- |
-| 01 | Arquitectura general | Parcial | `src/Quantum/Database/{Config,Runtime,Integration,Contracts,Connection,Driver,Platform,Dialect}`, `DatabaseServiceProvider`, `DatabaseCompositionRoot`, `ConnectionManager`, `PdoDriver`, `SqlitePlatform`, `SqliteDialect`, `config/database.php`, pruebas unit y feature del scope/conexion | Falta cerrar el vertical de ejecucion, query, schema y transaction para que la arquitectura deje de ser solo fundacional |
+| 01 | Arquitectura general | Parcial | `src/Quantum/Database/{Config,Runtime,Integration,Contracts,Connection,Driver,Platform,Dialect,Execution}`, `DatabaseServiceProvider`, `DatabaseCompositionRoot`, `ConnectionManager`, `PdoDriver`, `SqlitePlatform`, `SqliteDialect`, `QueryExecutor`, `StatementExecutor`, `config/database.php`, pruebas unit y feature del scope/conexion/ejecucion | Falta cerrar el vertical de query, schema y transaction para que la arquitectura deje de ser solo fundacional |
 | 02 | Query Model y AST | Pendiente | No existe codigo en `src/Quantum/Database` | Falta modelo tipado, AST, validacion y normalizacion |
 | 03 | Semantic Query Engine | Pendiente | Sin evidencia suficiente | Falta resolucion semantica, graph y type inference |
 | 04 | Query Builder | Pendiente | Sin evidencia suficiente | Falta builder publico, expresiones, predicados y DML |
 | 05 | Optimizer y Planner | Pendiente | Sin evidencia suficiente | Faltan optimizer, logical plan y execution plan |
 | 06 | SQL Compiler | Pendiente | Sin evidencia suficiente | Faltan compiler pipeline, dialect compilers y cache de artefactos |
-| 07 | Execution Engine | Pendiente | Sin evidencia suficiente en `Quantum/Database` | Falta frontera de ejecucion, statements, results y cleanup determinista |
+| 07 | Execution Engine | Parcial | `CompiledDatabaseCommand`, `RuntimeBindingSet`, `ExecutionContext`, `ExecutionFailure`, `ExecutionException`, `StatementExecutor`, `QueryExecutor`, `DatabaseResult`, bindings scoped en provider, pruebas `DatabaseExecutionPrimitivesTest` y `DatabaseQueryExecutionTest` | Falta prepared statement lifecycle mas rico, cursores/streaming, timeout/cancellation y clasificacion de errores mas profunda |
 | 08 | Schema | Pendiente | Sin evidencia suficiente | Faltan schema model, builder, diff, compiler e introspection |
 | 09 | Migrations | Pendiente | Sin evidencia suficiente | Faltan repository, planner, executor, rollback y safety system |
 | 10 | ORM | Pendiente | Sin evidencia suficiente | Faltan metadata, entity manager, repository y model API |
@@ -67,10 +67,10 @@ El documento `00_DATABASE_PROJECT_CONTEXT.md` se usa como contexto base y no se 
 | 26 | Multitenancy Integration | Pendiente | Sin evidencia suficiente | Faltan tenant-aware connections, context y schema/database isolation |
 | 27 | Advanced Capabilities | Pendiente | Sin evidencia suficiente | Faltan JSON, FTS, temporal, archival y capability system operativo |
 | 28 | Backup y Operations | Pendiente | Sin evidencia suficiente | Faltan backup/restore abstractions, diagnostics y maintenance services |
-| 29 | Testing | Parcial | `DatabaseConfigurationBindingTest`, `DatabaseConnectionManagerTest`, `DatabaseRuntimeScopeTest`, `DatabaseSqliteConnectionTest`, regresiones verdes de `RuntimeScopeTest` y `ApplicationBootstrapTest` | Faltan matriz de pruebas por driver adicional, query, schema y transaction |
+| 29 | Testing | Parcial | `DatabaseConfigurationBindingTest`, `DatabaseConnectionManagerTest`, `DatabaseExecutionPrimitivesTest`, `DatabaseRuntimeScopeTest`, `DatabaseSqliteConnectionTest`, `DatabaseQueryExecutionTest`, regresiones verdes de `RuntimeScopeTest` y `ApplicationBootstrapTest` | Faltan matriz de pruebas por driver adicional, query model, schema y transaction |
 | 30 | Extensibility | Pendiente | Sin evidencia suficiente | Faltan extension points, manifests y registries de extensiones/plugins |
 | 31 | Developer Experience y API Publica | Pendiente | Existe patron general de facades y CLI en el framework | Falta surface publica Database, helper, facade, diagnostics y codegen |
-| 32 | VoltStack Integrations | Parcial | `DatabaseServiceProvider` registrado por defecto en `Application.php`, `DatabaseCompositionRoot`, `ConnectionManagerInterface`, config tipada, lifecycle HTTP inicial, cleanup de conexiones y `config/database.php` en skeleton | Faltan integraciones concretas con console, telemetry Database, CLI y runtime no HTTP |
+| 32 | VoltStack Integrations | Parcial | `DatabaseServiceProvider` registrado por defecto en `Application.php`, `DatabaseCompositionRoot`, `ConnectionManagerInterface`, `StatementExecutorInterface`, `QueryExecutorInterface`, config tipada, lifecycle HTTP inicial, cleanup de conexiones y `config/database.php` en skeleton | Faltan integraciones concretas con console, telemetry Database, CLI y runtime no HTTP |
 | 33 | Governance y Compatibility | Pendiente | Sin evidencia suficiente | Faltan politicas de compatibilidad, versioning y adapters de migracion |
 | 34 | Final Architecture y Migration from Legacy | Pendiente | Solo existe documentacion arquitectonica | Falta toolchain real de analisis, transformacion, shadowing y dual runtime |
 
