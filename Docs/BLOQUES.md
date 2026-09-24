@@ -1,4 +1,8 @@
+# Arquitectura de la Base de Datos
+
+// Start of Selection
 | Bloque | Área de diseño                          | Documentos |
+// End of Selection
 | ------ | --------------------------------------- | ---------: |
 | 0      | Fundamentos                             |      00–09 |
 | 1      | Driver, Connection, Platform            |      10–22 |
