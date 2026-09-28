@@ -14,9 +14,9 @@ Sirve como control operativo de:
 
 ## Corte actual
 
-- Fecha de actualizacion: `2026-09-24`
-- Estado general: `Bootstrap, acceso, Execution, Query, Schema, Migrations, Transaction, surface publica minima, ORM minimo y types ORM base de Database implementados`
-- Foco del corte: `cerrar DV-DB-009 con type registry ORM, casting extensible minimo y pruebas feature tipadas`
+- Fecha de actualizacion: `2026-09-27`
+- Estado general: `Bootstrap, acceso, Execution, Query, Schema, Migrations, Transaction, surface publica minima, ORM minimo, types ORM base, relaciones ManyToOne/OneToMany bidireccionales V1, value objects embedded multi-columna V1, Factories + Seeders minimo V1 y Repository Factory con DI tipado + helpers ergonomicos V1 de Database implementados`
+- Foco del corte: `cerrar DV-DB-013 con contract RepositoryFactoryInterface, atributo #[RepositoryFor], CustomRepositoryRegistry singleton-safe dual (#[RepositoryFor] discovery + register explicito), EntityRepositoryFactory scoped, EntityMetadataRegistry upgrade resolviendo repositoryClass dual-source (#[Entity(repository:X)] primero, CustomRegistry fallback), EntityRepository helpers save/delete/count/exists + accessors tipados, Select/EntityQuery::count aggregator reutilizando DatabaseResult Countable, DatabaseInterface/Database shortcut repositoryFactory(), bindings provider, y feature test 70 aserciones sobre SQLite`
 
 ## Versionado de desarrollo
 
@@ -270,6 +270,137 @@ Las siguientes entradas representan el orden sugerido de ejecucion. No deben mar
   - hydration, criteria de `EntityQuery` y escrituras de persistencia convergen en la misma conversion tipada para scalar, `DateTimeImmutable`, `BackedEnum` y JSON,
   - y el vertical ORM queda validado con pruebas feature reales sobre SQLite para round-trip tipado y regresion del vertical Database existente.
 
+### DV-DB-010
+
+- Estado: `Implementado`
+- Bloque documental: `115-122`, `116-08-116-88`
+- Alcance objetivo:
+  - abrir modelo minimo de relaciones bidireccionales ORM,
+  - definir atributos `ManyToOne` (lado owning) y `OneToMany` (lado inverse),
+  - extender metadata canonica con descriptores de asociacion y mapeos de FK,
+  - introducir construccion de metadata en dos fases para evitar recursion en relaciones bidireccionales,
+  - integrar helpers de carga (to-one, to-many) en `EntityManager` sin abrir un runtime paralelo,
+  - y extender `EntityQuery` con traduccion automatica de filtros por asociacion owning hacia la columna FK correspondiente.
+- Evidencia principal:
+  - `vendor/voltstack/framework/src/Quantum/Database/ORM/Attributes/{ManyToOne,OneToMany}.php`
+  - `vendor/voltstack/framework/src/Quantum/Database/ORM/Metadata/EntityAssociationMetadata.php`
+  - actualizacion de:
+    - `vendor/voltstack/framework/src/Quantum/Database/ORM/Metadata/{EntityMetadata,EntityMetadataRegistry}.php` (lista de asociaciones, acceso `associations()`/`association()`/`hasAssociation()`, build shell→final en dos fases, validacion de target y resolucion de join column)
+    - `vendor/voltstack/framework/src/Quantum/Database/ORM/EntityManager.php` (helpers `loadToOne`, `loadToMany`, lectura de valor FK desde campo fuente, asignacion de valor en propiedad de asociacion; `metadata` ahora expuesto publicamente para helpers auxiliares)
+    - `vendor/voltstack/framework/src/Quantum/Database/ORM/EntityQuery.php` (traduccion `where()` y `orderBy()` por nombre de asociacion owning a columna FK; normalizacion de valor entidad→identifier)
+  - `vendor/voltstack/framework/tests/Feature/DatabaseOrmFeatureTest.php` (nueva prueba `test_bidirectional_many_to_one_and_one_to_many_load_and_query_over_sqlite` con entidades `OrmBlogPost` ↔ `OrmBlogComment`; validacion de metadata, persistencia de FK, consultas raw y via ORM, `loadToOne`, `loadToMany`, IdentityMap, `EntityQuery` con objeto entidad y con ID)
+  - regresion en verde de `DatabasePublicApiFacadeTest`, `DatabaseQueryBuilderExecutionTest`, `DatabaseTransactionManagerTest` y `DatabaseOrmFeatureTest` (9 tests, 122 assertions) sobre el suite framework completo.
+- Resultado:
+  - `Quantum/Database` ahora dispone de un primer modelo minimo de relaciones ORM sin duplicar el engine SQL existente: `ManyToOne` owning y `OneToMany` inverse, con atributos declarativos, metadata canonica, y construccion en dos fases segura ante referencias cruzadas bidireccionales,
+  - los usuarios pueden cargar to-one y to-many bajo demanda mediante `EntityManager::loadToOne` y `EntityManager::loadToMany`, reutilizando `IdentityMap` y el `DatabaseQueryManager`/`SelectQueryBuilder` existente,
+  - `EntityQuery` acepta de forma ergonomica `where('post', $postObject)` y `where('post', $postId)` traduciendo automaticamente a la columna FK,
+  - la persistencia de la columna FK no requiere escritura ORM especial: el usuario sigue usando el campo escalar FK declarado con `#[Column]` y luego puede cargar la asociacion, manteniendo asi el runtime minimo sin un write path paralelo,
+  - y el vertical de relaciones queda validado con prueba feature real bidireccional sobre SQLite, regresion verde del ORM y del conjunto Database fundacional.
+
+### DV-DB-011
+
+- Estado: `Implementado`
+- Bloque documental: `115-120`, `116 seccion embedded/value objects`
+- Alcance objetivo:
+  - abrir value objects embedded multi-columna en el ORM sin engine paralelo,
+  - definir atributo `#[Embedded(class, prefix?)]` declarativo sobre propiedad entidad,
+  - extender metadata canonica con `EntityEmbeddedMetadata` y `EntityEmbeddedFieldMetadata`,
+  - abstraer el pipeline de types para aceptar campos escalar entidad y campos de embedded a traves de una interfaz comun,
+  - integrar embedded en el write path (`extractForWrite`), snapshot/dirty check (`extract()`) y read path (`hydrate()`),
+  - extender `EntityQuery::where/orderBy` con traduccion automatica de nested paths tipo `price.amount`,
+  - integrar embedded nullable: si todas las columnas son NULL hydrate devuelve null; si propiedad entidad es null, extractForWrite escribe NULLs multi-columna,
+  - y corregir el dirty check de UoW para detectar keys que desaparecen de `$current` vs snapshot al nullificar un embedded.
+- Evidencia principal:
+  - `vendor/voltstack/framework/src/Quantum/Database/ORM/Attributes/Embedded.php`
+  - `vendor/voltstack/framework/src/Quantum/Database/ORM/Metadata/{EntityEmbeddedMetadata,EntityEmbeddedFieldMetadata,EntityTypedFieldInterface}.php`
+  - actualizacion de:
+    - `vendor/voltstack/framework/src/Quantum/Database/ORM/Metadata/{EntityMetadata,EntityMetadataRegistry,EntityFieldMetadata}.php` (lista `embeddeds`, accessors, shell/final build con embeddeds, parsing de `#[Embedded]` + reflexion de inner `#[Column]` fields, implementacion EntityTypedFieldInterface)
+    - `vendor/voltstack/framework/src/Quantum/Database/ORM/Types/Contracts/TypeHandlerInterface.php` (cambio tipado `EntityFieldMetadata` → `EntityTypedFieldInterface`, manteniendo back-compat via implements en EntityFieldMetadata)
+    - `vendor/voltstack/framework/src/Quantum/Database/ORM/Types/{ScalarTypeHandler,BackedEnumTypeHandler,DateTimeImmutableTypeHandler,JsonTypeHandler}.php` (actualizacion signature + uso de `->enumClass()` / `->name()`)
+    - `vendor/voltstack/framework/src/Quantum/Database/ORM/EntityManager.php` (nueva logica dirty check `flushUpdate` mergeando `$current` y `$original` keys para detectar embedded→NULL y traduccion embedded path)
+    - `vendor/voltstack/framework/src/Quantum/Database/ORM/EntityQuery.php` (traduccion nested paths via `resolveEmbeddedPath()` para where() y orderBy())
+  - `vendor/voltstack/framework/tests/Feature/DatabaseOrmFeatureTest.php` (nueva prueba `test_embedded_value_objects_multicolumn_round_trip_and_query_over_sqlite` con fixtures `OrmMoney`, `OrmDimensions`, `OrmProduct`; cobertura de metadata, persistencia multi-columna, lectura raw vs ORM, hydration nullable, querys anidadas `where('price.amount', …)` / `where('price.currency', 'EUR')`, `where('dimensions.depth', '50')`, update con dirty-check tras mutar inner field y nullificar embedded completo)
+  - regresion en verde de `DatabasePublicApiFacadeTest`, `DatabaseQueryBuilderExecutionTest`, `DatabaseTransactionManagerTest` y `DatabaseOrmFeatureTest` (10 tests, 172 assertions) sobre el suite framework completo despues del cambio de TypeHandlerInterface.
+- Resultado:
+  - `Quantum/Database` ORM ya puede modelar value objects multi-columna via atributos declarativos: un objeto PHP (Money{amount,currency}) mapea a multiples columnas (price_amount, price_currency), con prefijo por default inferido `{propiedad}_` o sobreescrito via `#[Embedded(prefix: …)]`,
+  - el pipeline de conversion de tipos queda ahora desacoplado: `TypeHandlerInterface` consume `EntityTypedFieldInterface`, permitiendo que los mismos handlers sirvan tanto para `EntityFieldMetadata` (campos entidad) como para `EntityEmbeddedFieldMetadata` (campos embedded inner),
+  - write path, read path y dirty check soportan embedded nullable de forma consistente: si el VO es NULL todas las columnas se escriben como NULL; si todas las columnas en row son NULL el VO se hidrata como NULL; al mutar inner fields o nullificar todo el VO, `flushUpdate` detecta el cambio correctamente (incluyendo keys que desaparecen),
+  - `EntityQuery` traduce ergonomicamente `where('price.amount', '<', 15000)` y `orderBy('price.amount')` a las columnas reales con conversion de tipos via type handler del campo inner,
+  - y el vertical de value objects embedded queda validado con prueba feature real sobre SQLite, regresion verde completa de Database y ORM incluido el cambio estructural de la interfaz TypeHandler.
+
+### DV-DB-012
+
+- Estado: `Implementado`
+- Bloque documental: `05 factories/seeders`, `18 Factories & Seeders Fixtures`, `29 Testing`, `31 DevX`, `32 Integrations`
+- Alcance objetivo:
+  - abrir sistema mínimo de Factories + Seeders para acelerar generación de datos de prueba y seeding determinista,
+  - definir contratos `FactoryInterface` y `SeederInterface` públicos,
+  - implementar `AbstractFactory` base con `times(int)` inmutable, `make(array overrides)` sin persistir y `create(array overrides)` delegando persist al `EntityManager`,
+  - implementar `FactoryDiscovery` que acepta 3 formas de retorno (instancia, class-string, `callable(Application): FactoryInterface`) desde `database/factories/*.php`,
+  - implementar `FactoryRegistry` singleton-safe indexado por `entityClass()` con registro explícito y guardia contra duplicados,
+  - implementar `AbstractSeeder` base con helpers `call()` anidado, `factory(string $entity, ?int $times)` shortcut y `flush()` conveniencia,
+  - implementar `SeederDiscovery` con mismas 3 formas de retorno desde `database/seeders/*.php`,
+  - implementar `SeederRunner` (intencionalmente scoped) que resuelve seeder por prioridad `--class` → discovery `DatabaseSeeder` → fallback, ejecuta run() dentro de `TransactionManagerInterface::begin()/flush()/commit()` con rollback completo ante cualquier `Throwable`,
+  - exponer comando CLI `database:seed` con opciones `--class` y `--path` ejecutándose dentro de su propio Scope Request idéntico al patrón de los otros 3 comandos DB,
+  - registrar bindings en `DatabaseServiceProvider`: singletons `FactoryDiscovery`, `FactoryRegistry`, `SeederDiscovery`; scoped `SeederRunner`; comando `DatabaseSeedCommand` en `commands()`,
+  - y corregir bug estructural en `DatabaseResult` que no exponía `Countable` ni `IteratorAggregate`, causando que `count($db->table(...)->get())` retornara 0 aunque rows[] estuviera lleno (PDO SQLite `rowCount()` retorna 0 para SELECTs).
+- Evidencia principal:
+  - `vendor/voltstack/framework/src/Quantum/Database/Contracts/FactoryInterface.php`
+  - `vendor/voltstack/framework/src/Quantum/Database/Contracts/SeederInterface.php`
+  - `vendor/voltstack/framework/src/Quantum/Database/Factories/{AbstractFactory,DiscoveredFactory,FactoryDiscovery,FactoryRegistry}.php`
+  - `vendor/voltstack/framework/src/Quantum/Database/Seeders/{AbstractSeeder,DiscoveredSeeder,SeederDiscovery,SeederRunner}.php`
+  - `vendor/voltstack/framework/src/Quantum/Console/Commands/DatabaseSeedCommand.php`
+  - actualización de `vendor/voltstack/framework/src/Quantum/Database/Integration/DatabaseServiceProvider.php` (singletons FactoryDiscovery/FactoryRegistry/SeederDiscovery, scoped SeederRunner, DatabaseSeedCommand en commands())
+  - bugfix estructural en `vendor/voltstack/framework/src/Quantum/Database/Execution/DatabaseResult.php`: agrega `implements \Countable, \IteratorAggregate`; `count()` retorna `count($this->rows)` para resultType Rows; `getIterator()` retorna `ArrayIterator($this->rows)`
+  - bugfix en `vendor/voltstack/framework/src/Quantum/Database/Seeders/AbstractSeeder.php`: `$application` pasa a `private` con setter `setApplication(Application)` público; `call()` usa setter en lugar de escribir propiedad protegida directamente (evita acceso ilegal desde SeederRunner cuando seeder es clase anónima).
+  - `vendor/voltstack/framework/src/Quantum/Database/Seeders/SeederRunner.php` actualizado para usar `$seeder->setApplication($app)`
+  - `vendor/voltstack/framework/tests/Feature/DatabaseFactoriesSeedersFeatureTest.php` (prueba end-to-end sobre SQLite temp-dir con Schema real, EntityManager, DbsArticle fixture, factory/seeder discovery via archivos PHP escritos on-the-fly en dirs temp; 32 aserciones que cubren metadata extractForWrite, registry lookup, make sin id, manual persist baseline, `times(5)->create()`, `SeederRunner` via discovery, nested `$this->factory(...)` dentro seeder, consultas EntityQuery con where/orderBy para published/unpublished y repository findAll total).
+  - regresión en verde de `DatabasePublicApiFacadeTest`, `DatabaseQueryBuilderExecutionTest`, `DatabaseTransactionManagerTest`, `DatabaseOrmFeatureTest`, `DatabaseConsoleCommandsTest` y `DatabaseFactoriesSeedersFeatureTest` (12 tests, 210 aserciones) sobre el suite framework completo después del fix DatabaseResult.
+- Resultado:
+  - `Quantum/Database` ahora dispone de una superficie mínima de Factories + Seeders V1 para acelerar productividad del desarrollador sin abrir runtime paralelo: tanto `Factory::create()` como `SeederRunner` delegan todo el write path al `EntityManager` + `TransactionManagerInterface` + `DatabaseQueryManager` ya existentes,
+  - `FactoryRegistry` y `SeederDiscovery` son singleton-safe (solo leen archivos + indexan metadata), mientras que `SeederRunner` permanece scoped para depender del `EntityManager` + `TransactionManager` actualmente scoped (seguridad para runtime persistente FrankenPHP/RoadRunner),
+  - `database:seed` CLI ya está registrado en `DatabaseServiceProvider::commands()` y ejecuta dentro de su propio Scope recién abierto, idéntico al patrón de status/migrate/rollback,
+  - el bugfix de `DatabaseResult` habilitando `Countable` + `IteratorAggregate` es un cierre estructural transversal: cualquier código que usa `count($result)` o `foreach ($result as $row)` sobre el resultado de `$db->table(...)->get()` ahora funciona sin depender de `PDOStatement::rowCount()` (que en SQLite retorna 0 para SELECTs),
+  - y el vertical Factories+Seeders V1 queda validado con prueba feature real sobre SQLite temp, incluyendo integración real con el ScopeManager, regresión verde completa sobre todo el conjunto Database + ORM + Console existente.
+
+### DV-DB-013
+
+- Estado: `Implementado`
+- Bloque documental: `119 Repositorios`, `302 Public API`, `31 DevX`, `32 Integrations`, `10 ORM`, `11 IdentityMap-UnitOfWork`
+- Alcance objetivo:
+  - entregar Repository Factory con inyección de dependencias tipada para que servicios y controladores consuman repositorios sin depender del EntityManager directamente,
+  - habilitar dos convenciones de binding declarativo: la existente `#[Entity(repository: X)]` sobre entidad y la nueva `#[RepositoryFor(Entity)]` sobre clase repositorio custom,
+  - construir un `CustomRepositoryRegistry` singleton-safe que soporte tanto discovery de atributos como registro explícito (para testing/manifiestos),
+  - actualizar `EntityMetadataRegistry` con resolución dual-source de repositoryClass (Entity attr primero, CustomRegistry fallback) en ambas fases shell/final,
+  - implementar `EntityRepositoryFactory` scoped que delegue 100% a `EntityManager::repository()` preservando la cache única por EM sin duplicación,
+  - añadir helpers ergonomicos mínimos a `EntityRepository`: `save(object,flush)`, `delete(object,flush)` con guardia de clase vía RuntimeException, `count(criteria)`, `exists(criteria)` + accessors tipados `getEntityManager/getMetadata/getEntityClass`,
+  - añadir aggregator `SelectQueryBuilder::count()` y `EntityQuery::count()` sin abrir engine paralelo (reutiliza `DatabaseResult::count()` Countable desde DV-DB-012),
+  - exponer shortcut público `DatabaseInterface::repositoryFactory(): RepositoryFactoryInterface` sobre la fachada `Database`,
+  - y registrar bindings lifetime-correctos en `DatabaseServiceProvider`: `CustomRepositoryRegistry` singleton, `EntityRepositoryFactory` scoped, `RepositoryFactoryInterface` bind → concrete, `EntityMetadataRegistry` wired con CustomRegistry, `Database` constructor 9º arg con RepositoryFactory.
+- Evidencia principal:
+  - `vendor/voltstack/framework/src/Quantum/Database/ORM/Contracts/RepositoryFactoryInterface.php` — contract público: `repositoryFor(string $entityClass): EntityRepositoryInterface`
+  - `vendor/voltstack/framework/src/Quantum/Database/ORM/Attributes/RepositoryFor.php` — atributo `#[Attribute(TARGET_CLASS)]` con `entityClass` FQCN
+  - `vendor/voltstack/framework/src/Quantum/Database/ORM/CustomRepositoryRegistry.php` — singleton-safe; dual convetion: auto-discovery `#[RepositoryFor]` + `register(repoClass,?entityClass)` explícito; duplicate guard RuntimeException; class-existence + interface checks
+  - `vendor/voltstack/framework/src/Quantum/Database/ORM/EntityRepositoryFactory.php` — scoped factory; 100% delegation a `EntityManagerInterface::repository(entity)` → single cache source
+  - `vendor/voltstack/framework/src/Quantum/Database/ORM/EntityRepository.php` (upgrade): accessors `getEntityManager()/getMetadata()/getEntityClass()`; `save(object,flush:bool)` + `delete(object,flush:bool)` con entity-class guard RuntimeException; `count(array $criteria=[]): int` (delegates a EntityQuery count); `exists(array $criteria): bool` via count>0
+  - `vendor/voltstack/framework/src/Quantum/Database/ORM/EntityQuery.php:162-165` — `count(?string $column=null): int` delega a `$this->query->count()`
+  - `vendor/voltstack/framework/src/Quantum/Database/Query/Builder/SelectQueryBuilder.php:129-143` — `count(?column): int` mediante builder clonado + wherePredicates transferidos + `count($builder->get())` sobre DatabaseResult Countable (no parallel compiler path)
+  - `vendor/voltstack/framework/src/Quantum/Database/ORM/Metadata/EntityMetadataRegistry.php` upgrade: constructor 2º param `?CustomRepositoryRegistry $customRepositories=null`; `build()` shell/final ambos leen `resolveRepositoryClass(entityClass, attrRepo)`; helper privado prefiere `#[Entity(repository: X)]` → fallback `CustomRepositoryRegistry::repositoryFor(entity)`
+  - `vendor/voltstack/framework/src/Quantum/Database/Contracts/DatabaseInterface.php:9-37` — import `RepositoryFactoryInterface`; método `repositoryFactory(): RepositoryFactoryInterface`
+  - `vendor/voltstack/framework/src/Quantum/Database/Database.php:16-109` — constructor 9º param `RepositoryFactoryInterface $repositoryFactory`; accessor devuelve instancia
+  - `vendor/voltstack/framework/src/Quantum/Database/Integration/DatabaseServiceProvider.php:33-42 (imports), 107-112 (singletons), 202-217 (scoped bindings)` — singleton CustomRepositoryRegistry → wired a EntityMetadataRegistry; scoped EntityRepositoryFactory; bind RepositoryFactoryInterface → concrete; Database scoped recibe 9º arg
+  - `vendor/voltstack/framework/tests/Feature/DatabaseOrmFeatureTest.php` — nueva prueba `test_repository_factory_with_di_typed_and_ergonomic_helpers` con fixtures `OrmTag` (entity id/name/slug/visible) y `#[RepositoryFor(OrmProduct::class)] OrmProductRepository` custom; 70 aserciones que cubren: CustomRegistry explicit register + metadata assertion, DI RepositoryFactoryInterface resolution, getEntityClass/getEntityManager identity, Database::repositoryFactory() same-obj, default EntityRepository resolution para OrmTag, save() sin-flush + save(flush:true) triple insert, assertNotNull ids, raw `$db->table(...)->count()` = 3, `EntityRepository::count()` = 3, `exists()` true/false, visible criteria counts 2/1, `EntityQuery::where(...)->count()`, findOneBy slug, delete(flush:true), findBy ordered asc name, custom OrmProductRepository via registry → `label()` retorna `sku-based-lookup`
+  - fix: `SelectQueryBuilder::count()` v1 usaba `select("COUNT(*) AS aggregate")` que pasaba por SqlCompiler `quoteIdentifierPath()` envolviéndolo en comillas como identificador → retorno 0 sobre filas reales; corregido a `count($builder->get())` sobre DatabaseResult Countable.
+  - simplificación: `EntityRepository::count()` eliminado código muerto `is_countable($result)` / `count($query->get())` fallback porque EntityQuery::count() ya retorna int canónico.
+  - regresión GREEN de `DatabasePublicApiFacadeTest`, `DatabaseQueryBuilderExecutionTest`, `DatabaseTransactionManagerTest`, `DatabaseOrmFeatureTest`, `DatabaseConsoleCommandsTest`, `DatabaseFactoriesSeedersFeatureTest` y el nuevo test (21 tests, 280 assertions) sobre SQLite.
+- Resultado:
+  - `Quantum/Database` ORM dispone de una superficie ergonomica de repositorios V1 consumible vía DI tipada: los consumidores declaran `RepositoryFactoryInterface` en constructor y obtienen repos canónicos sin depender directamente de `EntityManager` ni de `Application::make()`,
+  - las dos convenciones de binding declarativo coexisten sin colisión: equipos que acoplan entidad↔repo en el mismo bounded context usan `#[Entity(repository:X)]`, equipos con repositorios en módulos separados (sin tocar código fuente de entidad) usan `#[RepositoryFor(Entity)]` o `CustomRepositoryRegistry::register()` explícito,
+  - el `EntityRepositoryFactory` permanece estrictamente scoped: cada request/scope de FrankenPHP recibe factory cableada al EntityManager activo, nunca un singleton staled entre fronteras de request; `CustomRepositoryRegistry` (metadata/registros) permanece singleton-safe sin estado mutable de runtime,
+  - helpers `save/delete/count/exists` delegan 100% al runtime existente: `persist/remove` en UnitOfWork, `flush` en EntityManager y `count` en SelectQueryBuilder sobre DatabaseResult Countable — NO se abre segundo path SQL ni engine paralelo,
+  - `SelectQueryBuilder::count()` queda resuelto sobre el count() nativo de Countable DatabaseResult (fix estructural heredado de DV-DB-012), eliminando riesgos de quoting de expresiones aggregate en SqlCompiler y funciona cross-driver sin depender de dialect-specific SQL,
+  - y el vertical Repository Factory + helpers ergonomicos V1 queda validado con prueba feature real sobre SQLite temp (70 aserciones cubriendo resolución, identidad, persistencia, agregación, borrado y ordenación), regresión verde completa sobre 21 tests / 280 assertions en todo el conjunto Database + ORM + Console + FactoriesSeeders.
+
 ## Estado consolidado del sistema Database
 
 ### Ya disponible hoy
@@ -337,36 +468,74 @@ Las siguientes entradas representan el orden sugerido de ejecucion. No deben mar
     - handlers para scalar, `DateTimeImmutable`, `BackedEnum` y JSON,
     - `#[Column(type: ..., enumType: ...)]`,
     - conversion consistente en hydration, query criteria y writes ORM.
+12. Base de relaciones ORM V1 con:
+    - atributos `#[ManyToOne]` (owning) y `#[OneToMany]` (inverse),
+    - `EntityAssociationMetadata` como descriptor canonico de asociaciones (kind, target, join columns, mappedBy/inversedBy, owning/inverse helpers),
+    - `EntityMetadataRegistry::build()` en dos fases (shell → final) para resolver referencias cruzadas bidireccionales sin recursion infinita,
+    - helpers `EntityManager::loadToOne()` y `EntityManager::loadToMany()` reutilizando `IdentityMap` + `DatabaseQueryManager`,
+    - traduccion automatica en `EntityQuery::where()` / `orderBy()` desde nombre de asociacion owning a columna FK y normalizacion de valor entidad → identifier.
+13. Base de value objects embedded V1 con:
+    - atributo `#[Embedded(class, prefix?)]` declarativo sobre propiedad de entidad,
+    - `EntityEmbeddedMetadata` (VO descriptor con prefix, inner fields, reflection helpers) y `EntityEmbeddedFieldMetadata` (campo inner con conversiones tipadas),
+    - `EntityTypedFieldInterface` unificando el contrato de campo tipado para handlers de types,
+    - integración multi-columna en `EntityMetadata::extract()`, `extractForWrite()` y `hydrate()` con semantica nullable completa,
+    - traduccion nested paths en `EntityQuery::where()` / `orderBy()` via `resolveEmbeddedPath()`,
+    - actualizacion coherente de handlers `ScalarTypeHandler`, `BackedEnumTypeHandler`, `DateTimeImmutableTypeHandler`, `JsonTypeHandler`,
+    - y dirty check `EntityManager::flushUpdate()` mergeando keys `$current` + `$original` para detectar correctamente embedded→NULL.
+14. Base de Factories + Seeders V1 con:
+    - contratos públicos `FactoryInterface` (definition, entityClass, times, make, create) y `SeederInterface` (run(Application)),
+    - `AbstractFactory` base con `times(int)` inmutable por clone, `make(array)` por reflection sin constructor ni persist, `create(array)` delega `EntityManager::persist()` sin flush implícito,
+    - `FactoryDiscovery` / `SeederDiscovery` con 3 return shapes aceptados (instancia, class-string, `callable(Application): X`) desde `database/factories` / `database/seeders`,
+    - `FactoryRegistry` singleton-safe indexado por entityClass con `for()`, registro explícito y guardia contra duplicados,
+    - `AbstractSeeder` base con helpers `call()` para seeding anidado, `factory($class,?int)` shortcut y `flush()` conveniencia,
+    - `SeederRunner` scoped que ejecuta seeder dentro de `TransactionManagerInterface::begin()/flush()/commit()` con rollback completo ante cualquier Throwable,
+    - comando CLI `database:seed --class= --path=` registrado en `DatabaseServiceProvider::commands()` ejecutándose dentro de Scope Request propio,
+    - bindings en DatabaseServiceProvider: singletons `FactoryDiscovery`, `FactoryRegistry`, `SeederDiscovery`; scoped `SeederRunner`,
+    - y cierre estructural bugfix `DatabaseResult` ahora implementa `Countable` + `IteratorAggregate` (count() retorna rows para Rows; getIterator() itera rows).
+15. Base de Repository Factory + helpers ergonomicos V1 con:
+    - contract público DI-tipado `RepositoryFactoryInterface::repositoryFor(entityClass): EntityRepositoryInterface` para consumidores sin depender de EntityManager directamente,
+    - atributo declarativo `#[RepositoryFor(EntityClass::class)]` sobre custom repositorios (independiente del código fuente de la entidad),
+    - `CustomRepositoryRegistry` singleton-safe dual-mode: `#[RepositoryFor]` attribute discovery + `register(repoClass,?entityClass)` explícito con duplicate guard y type checks,
+    - `EntityMetadataRegistry` upgrade: resolución dual-source `repositoryClass` (prefiere `#[Entity(repository: X)]` existente → fallback `CustomRegistry`), aplicado en ambas fases shell/final,
+    - `EntityRepositoryFactory` scoped implementa RepositoryFactoryInterface; 100% delega a `EntityManager::repository()` preservando la cache única interna del EntityManager (no doble cache),
+    - helpers ergonomicos en EntityRepository: `save(object,flush)` / `delete(object,flush)` con RuntimeException guard si entidad no coincide con entityClass del repo; accessors `getEntityManager/getMetadata/getEntityClass`; `count(criteria=[])` / `exists(criteria)` via EntityQuery aggregator,
+    - aggregators `SelectQueryBuilder::count(?column): int` (mediante builder clonado + wherePredicates transfer + `count(DatabaseResult)` sobre Countable) y `EntityQuery::count(?column): int` (forwarding al SelectQueryBuilder subyacente),
+    - surface público Database: `DatabaseInterface::repositoryFactory(): RepositoryFactoryInterface` + `Database` con noveno constructor param y accessor,
+    - bindings lifetime discipline en `DatabaseServiceProvider`: `CustomRepositoryRegistry` singleton, `EntityRepositoryFactory` scoped, `RepositoryFactoryInterface` bind → concrete, `EntityMetadataRegistry` wired con CustomRegistry, `Database` scoped constructor recibe RepositoryFactory.
 
 ### Parcial o indirectamente disponible
 
 1. Runtime persistente general del framework ya conectado a Database en lifecycle HTTP.
 2. Telemetria general del framework reusable y ya consumida por Database en la primera capa de instrumentacion.
-3. CLI y bootstrap general del framework ya reutilizados por Database, aunque aun falta ampliar la superficie operativa mas alla del set minimo.
+3. CLI y bootstrap general del framework ya reutilizados por Database con 5 comandos operativos (`database:status`, `database:migrate`, `database:rollback`, `database:seed`, aunque aun falta ampliar la superficie: comandos `make:factory`, `make:seeder`, `authz:manifest:*` análogos DB, seeds avanzados con DAG dependencias, repositories codegen, etc.).
+4. Base de relaciones ManyToOne/OneToMany ya operativa pero todavia sin proxies, lazy transparente, joins en SQL, cascadas, orphan removal ni relationships de tipo OneToOne/ManyToMany.
+5. Base de value objects embedded ya operativa pero todavia sin nested embedded (embedded dentro de embedded), sin embedded en relationships, sin embedded collection/JSON, sin equals/hashCode por valor, y sin soporte en repository `findBy()` shortcuts para paths anidados (aunque `EntityQuery` si la soporta).
+6. Repository DI tipado ya operativo pero todavía sin manifests extensibles para discovery en módulos separados, sin interface bindings por entidad (ej `bind(OrmProductRepositoryInterface::class → concrete)`) y sin helpers `findByXxx()` mágicos ni Criteria API rich.
 
 ### Aun no desarrollado con evidencia suficiente
 
-1. Relationships, value objects avanzados, hydration planificada y surface ORM ampliada.
-2. Security, Resilience, Plugin y Legacy migration runtime.
-3. capabilities avanzadas, pagination, batch/streaming y distribucion.
+1. Hydration planificada/compilada, caches de metadata y surface ORM ampliada.
+2. Relationships ampliados (OneToOne, ManyToMany, join tables, proxies/lazy transparente, eager joins, cascadas).
+3. Value objects avanzados: nested embedded, embedded collection via JSON, value identity/equality helpers.
+4. Security, Resilience, Plugin y Legacy migration runtime.
+5. Capabilities avanzadas, pagination, batch/streaming y distribucion.
 
 ## Siguiente bloque recomendado
 
 ### Opcion recomendada posterior
 
-Profundizar el vertical ORM posterior a `DV-DB-009`:
+Profundizar el vertical ORM posterior a `DV-DB-013`, en el siguiente orden natural:
 
-- relationships y relationship loading,
-- value objects y custom types mas ricos,
-- hydration planificada y caches,
-- repository factory con DI,
-- y politicas de persistencia mas ricas sobre el mismo engine existente.
+1. **Lifecycle callbacks/events + cascade persist/remove mínimo + orphan removal básico**: política de persistencia sobre el mismo `UnitOfWork::flush()`, alineado con el pipeline ya existente. (bloques 11/ORM, 12/Hydration, 20/Events)
+2. **Relationships ampliados**: OneToOne bidireccional, ManyToMany con join-table, y opcionalmente estrategias EAGER JOIN declarativas sobre el mismo `SelectQueryBuilder`. (bloques 10/ORM, 13/Relationships, 04/Query Builder joins)
+3. **Factories & Seeders ampliados**: comandos generators `make:factory`, `make:seeder`, factory states/sequences nativos, soporte para seeder dependencias ordenado, y SeederRunner con progress/logger. (Prioridad 7, bloque 18 Factories)
+4. **Repositories avanzados**: manifests extensibles para discovery en módulos, interfaces por entidad + container bindings, Criteria API typed, y codegen helpers.
 
 Motivo:
 
-- el ORM minimo ya converge sobre `DatabaseQueryManager` y `TransactionManagerInterface`,
-- la base scoped (`EntityManager`, `IdentityMap`, `UnitOfWork`) y el type layer minimo ya quedaron validados en runtime real,
-- y el siguiente gap estructural dominante ya no es abrir ORM, sino ampliar esa base sin romper el aislamiento del runtime persistente.
+- la base ORM ya convergió sobre `DatabaseQueryManager` + `TransactionManagerInterface`, incluyendo Types V1, Relaciones V1, Embedded V1, Factories + Seeders V1 y ahora Repository Factory DI + helpers V1,
+- la vida scoped (`EntityManager`, `IdentityMap`, `UnitOfWork`, `SeederRunner`, `EntityRepositoryFactory`) y seguridad para runtime persistente siguen intactas,
+- y el siguiente gap estructural dominante ya no es abrir ergonomía diaria (hecho con save/delete/count/exists + DI tipado): **sino cerrar policy layer de persistencia** (Lifecycle callbacks + Cascade/OrphanRemoval mínimo) **antes** de saltar a relaciones más ricas o generators CLI.
 
 ## Regla de actualizacion de esta bitacora
 
