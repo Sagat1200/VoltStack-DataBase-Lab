@@ -817,7 +817,125 @@ Los consumidores declaran `RepositoryFactoryInterface` como dependencia de const
 - Bloque 29 (Testing): evidencia actualizada a 21 tests / 280 assertions post-013; subprueba 70 aserciones Repository Factory DI ergonomics documentada.
 - Bloque 31 (Developer Experience / API Pública): Operativa mantiene; agregados shortcuts Database::repositoryFactory(), atributo #[RepositoryFor], helpers EntityRepository save/delete/count/exists, aggregators EntityQuery/SelectQueryBuilder count, CustomRegistry registro explícito para testing/manifiestos.
 - Bloque 32 (Integrations): Operativa mantiene; bindings lifetime-correctos documentados (CustomRegistry singleton, EntityRepositoryFactory scoped wired a EM, Database 9º constructor param); fix quoting count v1 documentado.
-- Siguiente bloque recomendado (reordenado post-cierre DV-DB-013): 1) Lifecycle callbacks/events + policies persistencia (cascade persist/remove min + orphan removal básico) sobre UnitOfWork flush pipeline; 2) Relationships ampliados (OneToOne bidireccional, ManyToMany join-table, opcional eager joins declarativos sobre SelectQueryBuilder); 3) Factories & Seeders ampliados (comandos make:factory/make:seeder, factory states/sequences, seeder dependencies DAG ordering, SeederRunner progress/logger); 4) Repositories avanzados (manifests extensibles discovery, interface bindings por entidad container, Criteria API typed, codegen make:repository).
+- Siguiente bloque recomendado (reordenado post-cierre DV-DB-013): 1) Lifecycle callbacks/events + policies persistencia (cascade persist/remove min + orphan removal básico) sobre UnitOfWork flush pipeline — **IMPLEMENTADO en Fase 13 / DV-DB-014 (justo después)**; 2) Relationships ampliados (OneToOne bidireccional, ManyToMany join-table, opcional eager joins declarativos sobre SelectQueryBuilder); 3) Factories & Seeders ampliados (comandos make:factory/make:seeder, factory states/sequences, seeder dependencies DAG ordering, SeederRunner progress/logger); 4) Repositories avanzados (manifests extensibles discovery, interface bindings por entidad container, Criteria API typed, codegen make:repository); 5) Cache de consultas / second-level cache opcional + V2 lifecycle listeners con DI Container reemplazando `new $className()` V1.
+
+## Fase 13 - ORM: Lifecycle Callbacks + Cascade (PERSIST/REMOVE) + OrphanRemoval V1
+
+### Documentos fuente principales
+
+- Bloques 10 (ORM), 11 (IdentityMap / UnitOfWork / Persistence Policies), 20 (Events).
+- DEVELOPMENT_MATRIX.md filas 10 / 11 / 20.
+- DEVELOPMENT_GUIDELINES.md sección `#### Persistence Policies (Lifecycle / Cascade / OrphanRemoval) — Hard rules desde DV-DB-014`.
+- Plan oficial aprobado por usuario: `.trae/documents/DV-DB-014_plan.md` (14/09/2026 actualización post 013).
+
+### Objetivo
+
+Cerrar la capa de `Persistence Policies` del ORM UnitOfWork V1 para cubrir los policy hooks estándar del ciclo de vida de entidades (lifecycle canónico 7 eventos method-level), operaciones de propagación `Cascade` mínimas (PERSIST + REMOVE) sobre relaciones ManyToOne/OneToMany, y `OrphanRemoval` básico sobre asociaciones inversas OneToMany; incluyendo upgrade del pipeline `EntityManager::flush()` (orden topológico inserts parent→child, FK auto-populate owning-side, BFS anti-circular para cascades, snapshots de colecciones para orphan detection) — **TODO 100% compatible con entidades legacy sin atributos nuevos, sin nuevas dependencias Composer, sin ampliar constructor EntityManager ni bindings en DatabaseServiceProvider**.
+
+### Entregables mínimos
+
+1. **7 atributos lifecycle method-level TARGET_METHOD**: `PrePersist`, `PostPersist`, `PreUpdate`, `PostUpdate`, `PreRemove`, `PostRemove`, `PostLoad` — 1 FQCN `vendor/voltstack/framework/src/Quantum/Database/ORM/Attributes/{event}.php` cada uno.
+2. **Contracts listeners + Cascade**:
+   - `Contracts\Cascade` con constantes string `PERSIST/REMOVE/MERGE/DETACH/REFRESH` + `ALL = [PERSIST,REMOVE,MERGE,DETACH,REFRESH]` (V1: PERSIST y REMOVE con wireado activo; MERGE/DETACH/REFRESH aceptados sin wireado = no-op safe).
+   - `Contracts\EntityLifecycleListenerInterface`: métodos abstract `prePersist/postPersist/preUpdate/postUpdate/preRemove/postRemove/postLoad($entity, EntityManagerInterface $em, array $context = [])` sin default bodies (PHP interface no soporta).
+   - `Contracts\AbstractEntityLifecycleListener`: conveniencia implementa la interface con 7 default bodies vacíos; consumer code extiende esta clase y sobreescribe sólo los hooks que necesita.
+3. **Atributos Entity / ManyToOne / OneToMany upgrade (backward compat 100% defaults cero)**:
+   - `#[Entity(...)]` → nuevo trailing named arg `array $lifecycleListeners = []` (lista FQCN class listeners).
+   - `#[ManyToOne(...)]` → nuevo trailing named arg `array $cascade = []` (valores `Cascade::*`).
+   - `#[OneToMany(...)]` → nuevos trailing named args: `array $cascade = []` + `bool $orphanRemoval = false`.
+4. **Metadata shape upgrade**:
+   - `EntityAssociationMetadata` → constructor trailing defaults: `array $cascade = []`, `bool $orphanRemoval = false`; helpers `cascadesPersist(): bool`, `cascadesRemove(): bool`, `isManyToOne(): bool`, `isOneToMany(): bool`.
+   - `EntityMetadata` → shape estricto `lifecycleCallbacks: array<7 keys>` cada valor `list<Closure>`; constante pública `KNOWN_LIFECYCLE_EVENTS = ['prePersist','postPersist','preUpdate','postUpdate','preRemove','postRemove','postLoad']`; `DEFAULT_LIFECYCLE_CALLBACKS = array_fill_keys(KNOWN_LIFECYCLE_EVENTS, [])`; helpers `hasCallbacks(string $event): bool` y `callbacksFor(string $event): list<Closure>` (validation RuntimeException para eventos unknown); constructor accept named arg `lifecycleCallbacks = self::DEFAULT_LIFECYCLE_CALLBACKS` para que positional calls antiguas sigan funcionando.
+5. **EntityMetadataRegistry upgrade build two-phase**:
+   - imports 7 atributos lifecycle + EntityLifecycleListenerInterface + ReflectionMethod + Closure;
+   - nuevo helper privado `lifecycleAttributeMap(): array<attr-fqcn, event>`;
+   - nuevo helper privado `buildLifecycleCallbacks(ReflectionClass, ?array classListeners): array<7 events, list<Closure>>` dos fases: (a) method-level: iterar ReflectionMethod del entity → getAttributes(attrClass IS_INSTANCEOF) → setAccessible(true) → Closure wrapper `static fn($entity,$em,$ctx) => $methodRef->invoke($entity)`; (b) class-level listeners: por cada FQCN string → `class_exists()` RuntimeException → `is_subclass_of($class, EntityLifecycleListenerInterface::class)` RuntimeException → `new $class()` SIN constructor args SIN Container → registra 7 Closures por event que invocan `$instance->$event($entity, $em, $ctx)`;
+   - `build()` shell y final ambos pasan `lifecycleCallbacks` named arg a `new EntityMetadata(...)`;
+   - `mapAssociation()` para ManyToOne/OneToMany pasa `cascade` y `orphanRemoval` desde los Attribute instances instanciados.
+6. **UnitOfWork upgrade snapshots inverse OneToMany para OrphanRemoval**:
+   - import `Metadata\EntityAssociationMetadata` (fix TypeError old-NS vs Metadata\);
+   - nueva property privado scoped `array $originalCollections = []` (key: spl_object_id, subkey: associationName, value: list<int> oid collection items);
+   - `registerManaged($entity, $metadata, $key)` y `synchronize($entity, $metadata)` llaman `snapshotOneToManyCollections($entity, $metadata)`;
+   - `clear()` limpia `originalCollections = []`; `detach($entity)` elimina `unset($this->originalCollections[spl_object_id($entity)])`;
+   - API pública: `snapshotOneToManyCollections(object $entity, EntityMetadata $metadata): void`;
+   - API pública: `collectionDiff(object $entity, string $associationName): array{removed: list<object>, added: list<object>}`;
+   - helpers privados: `readOneToManyCollection(EntityAssociationMetadata, object): iterable<object>` y `collectObjectIdsFromCollection(iterable): list<int>`.
+7. **EntityManager flush pipeline upgrade (Paso 0-4 reordenados) — BACKWARD COMPAT entidades sin callbacks no ejecutan nada**:
+   - import `Contracts\Cascade`;
+   - `hydrateManaged($key, $metadata, $row)` → después registerManaged llama `dispatchLifecycle('postLoad', $entity)` (SÓLO cuando materializó entidad nueva: si ya estaba en identityMap NO ejecuta postLoad = no cache hit repetido);
+   - método `flush()` orden nuevo:
+     1. `applyCascadesBeforeFlush(Cascade::PERSIST)` — BFS por todas entidades NEW/MANAGED → si asociación cascadesPersist → si target no persistido aún → persist(target); con visited array `spl_object_id` anti-circular infinite loop;
+     2. `applyCascadesBeforeFlush(Cascade::REMOVE)` — mismo BFS para cascade REMOVE;
+     3. `collectOrphansForRemoval()` — iterar Managed entities, sus associations OneToMany con orphanRemoval=true → collectionDiff → removed items que sean Managed (Managed-only hard constraint) → `$this->remove($orphan)`;
+     4. `flushNewEntitiesInDependencyOrder()` — reemplaza iteración `newEntities()` raw; repeat-pass stall-guard orden topológico: iterar NEW → `newEntityIsInsertable()` = ManyToOne targets todos tienen id → `flushInsert($entity)`; si pass sin avance y quedan NEW entities → RuntimeException circular reference; luego flushManaged/flushRemoved como antes;
+   - `flushInsert($entity, $metadata, $key)` orden nuevo: `dispatchLifecycle('prePersist', $entity)` → `populateManyToOneForeignKeys($entity, $metadata)` → INSERT SQL → `$this->unitOfWork->synchronize(...)` → `dispatchLifecycle('postPersist', $entity)`;
+   - `flushUpdate($entity, $metadata, $key, $snapshot)` orden nuevo: `populateManyToOneForeignKeys($entity, $metadata)` → calcular `$currentValues = extract`, `$changes = array_diff_assoc($currentValues, $snapshot)` → `dispatchLifecycle('preUpdate', $entity, ['changes'=>$changes,'currentValues'=>$currentValues,'originalSnapshot'=>$snapshot])` → UPDATE SQL → sincronize → `dispatchLifecycle('postUpdate', $entity, ['changes'=>$changes,'currentValues'=>$currentValues])`;
+   - `flushDelete($entity, $metadata, $key)` orden nuevo: `dispatchLifecycle('preRemove', $entity)` → DELETE SQL → `dispatchLifecycle('postRemove', $entity)` → `$this->unitOfWork->detach($entity)` (detach DESPUÉS de postRemove no antes);
+   - **Nuevos métodos privados**: `dispatchLifecycle(string $event, object $entity, array $context = [])` (iterar `callbacksFor($event)` closures), `applyCascadesBeforeFlush(string $op)` BFS visited, `collectOrphansForRemoval()` Managed-only, `readAssociationTargets()`, `flushNewEntitiesInDependencyOrder()` stall-guard, `newEntityIsInsertable()`, `populateManyToOneForeignKeys($entity, $metadata)` (mismo naming convention que associationSourceValue: sourceFieldId → match sourceColumn mappedFields → sourceField directo), `readSingleAssociationTarget()` y `assignOwningSideForeignKey()`.
+8. **Suite pruebas GREEN obligatorias**:
+   - Unit `DVDB014LifecycleCascadeOrphanTest.php` ≥ 12 tests exit_code 0 (≥ 60 assertions): EntityMetadata 7 defaults shape, unknown-event validation, callbacksFor/hasCallbacks, EntityAssociation cascade/orphan defaults, Cascade::ALL flags, Registry 7 method-level discovery, dispatch closures reflection, invalid listeners (not exists / not implements), class listener 7 events + context propagation, backward compat BareSampleEntity 0 callbacks default assoc.
+   - Feature `DatabaseOrmFeatureTest.php` nueva subprueba 7 `test_lifecycle_callbacks_cascade_and_orphan_removal_over_sqlite` ≥ 60 assertions sobre SQLite temp con fixtures: `OrmCascadePost #[Table('orm_cascade_posts')]` / `OrmCascadeComment #[Table('orm_cascade_comments')]` OneToMany bidireccional (cascade PERSIST+REMOVE + orphanRemoval=true) / `OrmLifecyclePost #[Table('orm_timestamped_posts')]` (method-level #[PrePersist] set createdAt, lifecycleListeners [OrmLifecyclePostListener extends Abstract set updatedAt/updatedBy]). Escenarios mínimos: metadata sanity cascade/orphan/callbacks count/hasCallbacks event, cascade persist padre + 3 comments via solo persist padre, orphan removal unset 1 comment = 2 remain DB, lifecycle method+class timestamp + updatedBy no nulos, PreUpdate context has changes.title/current/original, cascade REMOVE padre = 0 comments, postLoad find after em clear forced fresh hydration, backward compat OrmTag/OrmUser sin attrs = 0 callbacks 7 events + asociaciones default cascade/orphan false.
+   - Regresión vertical Database ORM Feature existente (bidirectional, types round-trip, model API, entity_manager, embedded V1, repository factory V1) + Unit DV014 = ≥ 21 tests / 280 assertions GREEN sin regresiones.
+9. **Lint PHP 25+ archivos tocados**: `php -l` todos los archivos nuevos + modificados sin errores sintácticos; `composer dump-autoload` regenera classmap para AbstractEntityLifecycleListener nuevo archivo.
+
+### Pruebas mínimas
+
+1. Unit `DVDB014LifecycleCascadeOrphanTest` 14 tests/119 assertions (≥12 objetivo min):
+   - `Entity metadata defaults lifecycle callbacks to seven empty arrays` — sin pasar lifecycleCallbacks a metadata constructor, shape = 7 arrays vacíos (backward positional legacy).
+   - `Entity metadata rejects unknown lifecycle event keys` — pasando key 'prePersistInvalid' → RuntimeException.
+   - `Callbacks for rejects unknown event name` — callbacksFor('bogusEvent') → RuntimeException.
+   - `Has callbacks and callbacks for when populated` — shape con 3 callbacks prePersist → has true; otro event false.
+   - `Association metadata cascade and orphan defaults to safe values` — defaults cascade=[], orphan=false; helpers cascadesPersist/Remove = false.
+   - `Association metadata cascade all flags both persist and remove` — cascade=Cascade::ALL → ambos true.
+   - `Association metadata single cascade value matches only one operation` — cascade=[Cascade::PERSIST] → persist true / remove false.
+   - `Registry discovers seven method level attributes into correct event buckets` — fixture Sample con 7 methods cada attr → cada event bucket = 1 closure.
+   - `Registry dispatches method level attribute closure against entity instance` — invoke sobre Sample con propiedad → propiedad mutada.
+   - `Registry rejects class listener declaration that does not exist` → RuntimeException class NoExist.
+   - `Registry rejects class listener that does not implement interface` → RuntimeException class WrongInterface.
+   - `Registry registers class listener for all seven events` → 7 events count=1.
+   - `Registry dispatches class listener callbacks correctly` + context array propagado al listener.
+   - `Plain entity without new attributes exposes zero callbacks and default association shape` — BareSampleEntity = 0 callbacks 7 events, asociaciones default cascade/orphan seguros.
+2. Feature `test_lifecycle_callbacks_cascade_and_orphan_removal_over_sqlite` (93 assertions ≥60 objetivo min):
+   - Fixtures #[Table] nombres coinciden con tablas creadas via schema builder (no mismatch "no such table").
+   - Metadata sanity: comments assoc isOneToMany/isInverseSide/cascadesPersist/cascadesRemove/orphanRemoval all true; post assoc isManyToOne/isOwningSide/cascadesPersist true/remove false/orphan false.
+   - Listener wiring: prePersist=2 closures (1 method+1 class); postPersist/preUpdate/postUpdate/preRemove/postRemove=1 closure (solo class); postLoad=1 closure; hasCallbacks/!hasCallbacks unknown event.
+   - Cascade persist: persist(post) sin persist(comments) → 3 comments tienen id asignado; postId FK sync en cada comment = post->id; back-reference $comment->post === post; createdAt method-level en todos 4 objetos; raw count 1 post 3 comments; raw postRow title/published/created_at verificados.
+   - Orphan removal: post.comments = [c1,c3] tras flush; raw comments count=2; comment#2 fila null via where(body='#2'); comment1/3 still in DB + FK aun apuntan al post.
+   - Lifecycle timestamped: tPost id/createdAt/updatedAt/updatedBy no-nulos; class listener prePersist/postPersist calls[] tiene keys + entity identico + EM mismo objeto que usamos.
+   - PreUpdate context: beforeUpdateAt antes del flush/flush actualiza title/updatedAt>=beforeUpdateAt/class listener preUpdate+postUpdate llamados/preUpdate context changes.title='Callbacks v2'/currentValues.title='Callbacks v2'/originalSnapshot.title='Callbacks!'.
+   - Cascade REMOVE: remove(post) sin remove(comments) → 0 filas posts / 0 comments; em->contains(post/c1/c3) = false (detach post remove).
+   - PostLoad: em.clear() → find(tPost id) != tPost PHP object (fresh hydration NOT identity map cache); mismo id/title/createdAt/updatedAt/updatedBy retain DB values; class listener postLoad key exists en static::$calls + postLoad entity === tPostReload object recién hidratado.
+   - Backward compat: OrmTag 0 callbacks 7 events sum; OrmUser 0 callbacks; OrmUser asociaciones foreach cascadesPersist/Remove/orphanRemoval todos false por default sin attrs.
+3. Regresión GREEN: `DatabaseOrmFeatureTest` entero 7 tests/265 assertions + DVDB014LifecycleCascadeOrphan 14 tests/119 assertions = 21 tests/384 assertions exit_code 0.
+
+### Criterio de salida
+
+Consumidores del ORM ya pueden declarar 7 hooks lifecycle (method-level) o class listeners sin Container (V1 new $class()), cascade PERSIST/REMOVE funciona bidireccionalmente, orphanRemoval inverse OneToMany retira items DB sin manual delete, NEW entities se insertan siempre en orden parent→child sin FK violation (sin orden manual), ManyToOne owning-side FK auto-populate sin setter manual, backward compat 100% entidades preexistentes sin attrs funcionan igual (0 hooks ejecutados), sin librerías externas Composer, sin ampliar constructor EntityManager, sin bindings nuevos en DatabaseServiceProvider, sin estado mutable singleton metadata (snapshots en UoW scoped); todo test suite unit+feature+regresión GREEN exit_code 0.
+
+### Resultado del corte DV-DB-014
+
+1. **Lifecycle hooks system V1 operativo 7 eventos canónicos**: PrePersist/PostPersist/PreUpdate/PostUpdate/PreRemove/PostRemove/PostLoad dispatch reflection via EntityMetadata.callbacksFor() tanto method-level (ReflectionMethod + setAccessible + Closure wrapper instancia actual) como class listener via AbstractEntityLifecycleListener conveniencia.
+2. **Cascade PERSIST/REMOVE BFS anti-circular**: visited spl_object_id evita loops infinitos en asociaciones bidireccionales; MERGE/DETACH/REFRESH aceptados como no-op seguros sin romper código.
+3. **OrphanRemoval inverse OneToMany Managed-only hard constraint**: snapshots collection `originalCollections` en UnitOfWork::registerManaged/synchronize → collectionDiff spl_object_ids → removed items Managed solamente pasan a remove(); NEW entities en colección no activan orphan en el mismo flush (esperan siguiente flush tras synchronize).
+4. **NEW inserts topológico stall-guard**: elimina bug persistente "FK NOT NULL constraint failed insert child antes parent" sin Kahn algorithm ni dependencias; RuntimeException circular reference si hay ciclo.
+5. **ManyToOne FK auto-populate sync automático entre PHP reference ↔ FK scalar**: antes insert/update populateManyToOneForeignKeys lee target PHP reference y copia identifier a sourceFieldId usando misma convención naming que associationSourceValue (sin segunda convención paralela).
+6. **Context typed PreUpdate/PostUpdate**: listeners reciben exactamente changes/currentValues/originalSnapshot arrays sin leak entity global.
+7. **Backward Compat 100% confirmada**: OrmTag/OrmUser/Otros fixtures sin atributos nuevos → 0 callbacks 7 eventos; asociaciones sin cascade → cascade [] / orphanRemoval false. Constructor EntityManager 5 args originales intacto; DatabaseServiceProvider bindings sin cambios; EntityMetadata positional call legacy funciona.
+8. **Zero external dependencies**: 0 librerías Composer añadidas. Todo vanilla PHP 8.4 reflection + Closure + spl_object_id.
+9. **Test coverage GREEN**: Unit 14/14 tests/119 assertions; Feature 93 assertions subprueba 7; Regresión 21 tests/384 assertions exit_code 0.
+10. **Documentación DEVELOPMENT actualizada**: DEVELOPMENT_VERSIONS.md corte 2026-09-29 + entrada DV-DB-014 detallada + siguiente bloque Relationships V1; DEVELOPMENT_MATRIX.md filas 10 (ORM)/11 (UnitOfWork Persistence)/12 (Hydration)/13 (Relationships)/20 (Events) Pendiente → Parcial con evidencia actualizada; DEVELOPMENT_GUIDELINES.md nueva sección #### Persistence Policies 10 hard rules inquebrantables DV-DB-014+; EXECUTIVE_PLAN Roadmap resumido Fase 13 añadida.
+
+### Avance por bloques tras la fase
+
+- Bloque 10 (ORM): Parcial mantiene; evidencia visible ampliada drásticamente (7 lifecycle attrs, 3 contracts listeners/Cascade, Entity/ManyToOne/OneToMany upgrade cascade/orphan/listeners, EntityManager flush pipeline entero reordenado con dispatch/cascade/orphan/order/FK sync, UnitOfWork snapshots colecciones, 2 suites pruebas verde 384 assertions); gaps restantes: **OneToOne/ManyToMany join-tables, proxies lazy transparente, eager joins declarativos, embedded anidados, manifests repo discovery, Criteria API typed, listeners V2 con Container DI**.
+- Bloque 11 (Identity Map / Unit of Work / Persistence Policies): Parcial mantiene pero ahora policy layer V1 COMPLETO (hooks lifecycle + cascades PERSIST/REMOVE + orphan removal + orden inserts topológico + FK auto-sync); gaps restantes: cascades MERGE/DETACH/REFRESH wireado, merge/detach deep, change-tracking NOTIFY (actualmente snapshot), publisher events global fuera entity listeners, optimistic lock via version field.
+- Bloque 12 (Hydration): Parcial mantiene; añade PostLoad dispatch hook tras hydrateManaged en hidratación real (no identity cache hit); gaps: hydrators compilados, partial loads, eager joins SQL directo, embedded anidados, proxies lazy inverse, postLoad context partial-fields.
+- Bloque 13 (Relationships): Parcial mantiene; ahora asociaciones ManyToOne/OneToMany tienen cascade/orphanRemoval attrs + wiring metadata + inserts parent antes child + FK sync automático; gaps: **OneToOne bidireccional, ManyToMany #[JoinTable], proxies lazy, EAGER/LAZY fetch strategies, eager joins declarativos en query builder, control sistemico N+1**.
+- Bloque 20 (Events): Pendiente → **Parcial** (ahora existe event system V1 DENTRO del ORM UnitOfWork via 7 lifecycle hooks + listeners + context typed + Cascade events implícitos; faltan events framework-wide bus fuera ORM: query.executed, transaction.committed, migration.applied, publishers async, listeners V2 Container DI, event execution profiler timeline, failure isolation policy configurable).
+- Bloque 29 (Testing): Operativo mantiene; evidencia actualizada a **21 tests / 384 assertions** post-DV-DB-014 (DatabaseOrmFeature 265 + DVDB014LifecycleCascadeOrphan 119). Nueva subprueba 93 assertions Persistence Policies documentada.
+- Bloque 31 (Developer Experience y API Pública): Operativo mantiene; nuevas APIs públicas: 7 lifecycle method attributes, Entity(lifecycleListeners) declarativo, ManyToOne(cascade) / OneToMany(cascade + orphanRemoval) declarativos, 3 contracts (Cascade / Interface / Abstract Listener), EntityMetadata hasCallbacks/callbacksFor públicos, UnitOfWork snapshotOneToManyCollections/collectionDiff públicos accesibles desde repositorios avanzados o custom listeners post-flush, Cascade::ALL/PERSIST/REMOVE constantes públicas convenience.
+- Bloque 32 (VoltStack Integrations): Operativo mantiene; hard constraints NO tocar = se cumplieron: constructor EntityManager 5 args intactos, DatabaseServiceProvider bindings sin cambios, no-ampliar wiring provider, metadata singleton NO estado mutable runtime (snapshots en UoW scoped), listeners NO Container V1 (new $class() sin args).
+- **Siguiente bloque recomendado post-cierre Fase 13 / DV-DB-014**: 1) **Relationships Ampliados V1** (OneToOne bidireccional owning/inverse, ManyToMany con #[JoinTable] declarativo join-table, opcional EAGER JOIN declarativo sobre SelectQueryBuilder para resolver N+1 en ManyToOne/OneToOne); 2) **Factories & Seeders V2 Ampliados** (generators CLI make:factory, make:seeder, factory states/sequences nativos, seeder dependencies DAG ordenado, SeederRunner progress/logger); 3) **Repositories Avanzados V1** (manifests extensibles para discovery repositorios módulos separados, interface bindings por entidad + container automáticos, Criteria API typed independiente SQL, codegen make:repository); 4) **Cache Queries + Listeners V2 DI** (second-level cache driver-agnostic find/where frecuentes, refresh/merge/detach deep, lifecycle listeners V2 via Container reemplazando new $class() V1 para habilitar DI en listeners).
 
 ## Roadmap resumido
 
@@ -833,6 +951,7 @@ Los consumidores declaran `RepositoryFactoryInterface` como dependencia de const
 10. Fase 10: ORM Value Objects Embedded Multi-columna V1
 11. Fase 11: ORM Factories + Seeders minimo V1 + cierre DatabaseResult Countable/IteratorAggregate
 12. Fase 12: ORM Repository Factory con DI tipado + helpers ergonomicos minimo V1 (RepositoryFactoryInterface/RepositoryFor/CustomRepositoryRegistry/EntityRepositoryFactory/EntityRepository save/delete/count/exists/aggregators count/wiring provider)
+13. Fase 13: ORM Lifecycle Callbacks + Cascade PERSIST/REMOVE + OrphanRemoval V1 (DV-DB-014: 7 atributos lifecycle, contracts Cascade/ListenerInterface/AbstractListener, Entity(lifecycleListeners)/ManyToOne(cascade)/OneToMany(cascade+orphanRemoval), metadata shape lifecycleCallbacks 7 events + cascade/orphan helpers, Registry buildLifecycleCallbacks 2-fases, UoW snapshots inverse collections, EM flush reordenado dispatch/cascade BFS anti-circular/orphan removal Managed-only/NEW inserts stall guard order/FK auto-sync owning-side, Unit test 14/119 assertions + Feature test 93 assertions + regresión 384 assertions GREEN)
 
 ## Regla de control ejecutivo
 
