@@ -404,6 +404,24 @@ Toda implementación o extensión sobre `EntityQuery::partialManaged(...)`, `get
   - bloqueo de `remove()` sobre managed-partial,
   - y upgrade a entidad completa vía `find()` o `refresh()`.
 
+#### Query Builder Joins V1 (`SelectQueryBuilder::as/join/leftJoin`) — Hard rules desde DV-DB-020
+
+Toda implementación o extensión sobre joins declarativos del query layer **DEBE** respetar:
+
+- **El Query Builder sigue modelando, no ejecutando semántica ORM**: `join(...)` y `leftJoin(...)` construyen SQL relacional; no resuelven metadata ORM, no hidratan entidades y no infieren asociaciones automáticamente en este corte.
+- **Alcance V1 explícito**: se soportan `INNER JOIN` y `LEFT JOIN` con condición `column-to-column`. No se abre todavía `RIGHT JOIN`, `FULL JOIN`, joins por subquery, `USING(...)`, múltiples condiciones `ON`, ni `GROUP BY`.
+- **Alias de tabla deben ser first-class**: tanto la tabla `FROM` como las tablas joined pueden declarar alias. El compilador debe producir SQL con quoting consistente para nombre y alias.
+- **Column aliases también deben compilarse limpiamente**: expresiones tipo `table.column AS alias` deben salir correctamente quoted sin degradar el resto del pipeline.
+- **Sin raw SQL encubierto**: este corte no debe introducir un canal ambiguo para meter fragmentos SQL arbitrarios en joins. El contrato sigue siendo declarativo y acotado.
+- **Compatibilidad hacia atrás total**: `select()/where()/whereIn()/orderBy()/first()/count()` deben seguir funcionando para queries sin joins y preservar alias/joins cuando corresponda.
+- **`count()` debe preservar el shape de la query**: si el builder actual tiene alias o joins, el path interno usado por `count()` no puede perderlos silenciosamente.
+- **La capa compiler debe seguir siendo dialect-aware y segura**: el quoting de identifiers continúa centralizado en el compilador; joins no justifican bypass de placeholders ni concatenación insegura de values.
+- **Este bloque prepara, no resuelve, el fetch relacional del ORM**: cualquier integración con `EntityQuery`, metadata de asociaciones o hydration relacional pertenece a un corte posterior.
+- **Prueba mínima obligatoria**: toda ampliación de este bloque debe cubrir:
+  - test unitario de SQL compilado con alias + `INNER JOIN` + `LEFT JOIN`,
+  - feature SQLite que ejecute joins reales y valide resultados,
+  - y verificación explícita del SQL compilado con bindings.
+
 ### Security, Telemetry, CLI y Plugins
 
 Todo trabajo sobre `216-340` debe respetar:

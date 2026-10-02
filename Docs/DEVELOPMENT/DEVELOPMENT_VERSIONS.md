@@ -15,8 +15,8 @@ Sirve como control operativo de:
 ## Corte actual
 
 - Fecha de actualizacion: `2026-10-02`
-- Estado general: `Bootstrap, acceso, Execution, Query, Schema, Migrations, Transaction, surface publica minima, ORM minimo, types ORM base, relaciones ManyToOne/OneToMany bidireccionales V1, value objects embedded multi-columna V1, Factories + Seeders minimo V1, Repository Factory con DI tipado + helpers ergonomicos V1, ORM Lifecycle + Cascade + OrphanRemoval V1, Relationships Ampliados V1 (OneToOne bidireccional + ManyToMany con JoinTable declarativo), explicit batch preloading V1 via EntityQuery::with(...), projection/scalar hydration ORM V1, partial entity hydration explícita V1 (detached + refreshable), y partial entity hydration managed V1 implementados`
-- Foco del corte: `cerrar DV-DB-019 con EntityQuery::partialManaged(...), getPartialManaged(), firstPartialManaged(), registro managed parcial en IdentityMap/UnitOfWork con snapshot acotado a campos cargados, dirty-check/update limitados al subset loaded, guardrails de remove sobre managed partial y auto-upgrade a entidad completa vía find()/refresh(), nueva feature ORM 27 assertions y regresión vertical ORM green (31 tests/552 assertions)`
+- Estado general: `Bootstrap, acceso, Execution, Query, Schema, Migrations, Transaction, surface publica minima, Query Builder con joins declarativos V1, SQL Compiler con JOIN/alias support V1, ORM minimo, types ORM base, relaciones ManyToOne/OneToMany bidireccionales V1, value objects embedded multi-columna V1, Factories + Seeders minimo V1, Repository Factory con DI tipado + helpers ergonomicos V1, ORM Lifecycle + Cascade + OrphanRemoval V1, Relationships Ampliados V1 (OneToOne bidireccional + ManyToMany con JoinTable declarativo), explicit batch preloading V1 via EntityQuery::with(...), projection/scalar hydration ORM V1, partial entity hydration explícita V1 (detached + refreshable), y partial entity hydration managed V1 implementados`
+- Foco del corte: `cerrar DV-DB-020 con soporte declarativo de joins en SelectQueryBuilder/SelectQuery/AST/SqlCompiler, alias de tabla base vía as(...), inner join y left join con ON column-to-column, soporte SELECT column AS alias, nueva feature SQLite del query layer 6 assertions, nueva unitaria de compilación 2 assertions y regresión query layer green (5 tests/25 assertions)`
 
 ## Versionado de desarrollo
 
@@ -618,6 +618,45 @@ Las siguientes entradas representan el orden sugerido de ejecucion. No deben mar
   - el sistema sigue sin prometer asociaciones parciales, joins declarativos ni hydration plans compilados,
   - y el siguiente gap real pasa a ser la fase donde ese modelo managed parcial pueda convivir con estrategias de carga más ricas a nivel SQL.
 
+### DV-DB-020
+
+- Estado: `Implementado`
+- Bloque documental: `04 Query Builder`, `06 SQL Compiler`, `29 Testing`, `31 Developer Experience`
+- Alcance objetivo:
+  - abrir el primer corte útil de `joins declarativos` en el query layer,
+  - soportar `INNER JOIN` y `LEFT JOIN` con condiciones `column-to-column`,
+  - introducir alias de tabla base y de tablas joined,
+  - permitir columnas seleccionadas con `AS alias`,
+  - y validar el comportamiento con compilación unitaria y ejecución real sobre SQLite.
+- Evidencia principal:
+  - **Query Model / AST extendidos:**
+    - `vendor/voltstack/framework/src/Quantum/Database/Query/Model/TableReference.php` ahora soporta alias
+    - nuevo `vendor/voltstack/framework/src/Quantum/Database/Query/Model/Join.php`
+    - `vendor/voltstack/framework/src/Quantum/Database/Query/Model/SelectQuery.php` añade `joins`
+    - `vendor/voltstack/framework/src/Quantum/Database/Query/Ast/TableNode.php` ahora soporta alias
+    - nuevo `vendor/voltstack/framework/src/Quantum/Database/Query/Ast/JoinNode.php`
+    - `vendor/voltstack/framework/src/Quantum/Database/Query/Ast/SelectQueryNode.php` añade `joins`
+    - `vendor/voltstack/framework/src/Quantum/Database/Query/Ast/QueryAstFactory.php` mapea alias + joins del modelo al AST
+  - **API pública nueva en Query Builder:**
+    - `vendor/voltstack/framework/src/Quantum/Database/Query/Builder/SelectQueryBuilder.php`
+    - nuevos métodos `as(string $alias)`, `join(...)`, `leftJoin(...)`
+    - `count()`, `first()` y `toSelectQuery()` preservan alias + joins del builder actual
+  - **SQL Compiler ampliado:**
+    - `vendor/voltstack/framework/src/Quantum/Database/Query/Compiler/SqlCompiler.php`
+    - soporte para compilar `FROM ... AS ...`
+    - soporte para `INNER JOIN` / `LEFT JOIN`
+    - soporte para `SELECT table.column AS alias`
+  - **Pruebas GREEN:**
+    - `vendor/voltstack/framework/tests/Unit/DatabaseQueryCompilerTest.php` — nueva prueba `test_it_compiles_select_queries_with_inner_and_left_joins_and_aliases` (2 assertions)
+    - `vendor/voltstack/framework/tests/Feature/DatabaseQueryBuilderExecutionTest.php` — nueva prueba `test_query_builder_executes_inner_and_left_joins_against_sqlite` (6 assertions)
+    - regresión GREEN query layer: `5 tests / 25 assertions`
+    - el subset sigue reportando `2 deprecations` heredadas de PHPUnit, no introducidas por este corte
+- Resultado:
+  - `Quantum/Database` ya tiene joins declarativos utilizables en el Query Builder sin bajar a SQL manual,
+  - el compilador puede generar SQL con alias consistentes tanto en `FROM` como en `JOIN` y columnas seleccionadas,
+  - este corte sigue deliberadamente acotado al query layer: no resuelve todavía joins guiados por metadata ORM ni hydration relacional automática,
+  - la base ya está lista para que el siguiente bloque conecte esos joins con estrategias de carga más ricas del ORM.
+
 ## Estado consolidado del sistema Database
 
 ### Ya disponible hoy
@@ -694,6 +733,7 @@ Las siguientes entradas representan el orden sugerido de ejecucion. No deben mar
     - projection/scalar hydration explícita vía `EntityQuery::select(...)->rows()/firstRow()/pluck()/value()` sobre fields, embedded paths y owning to-one identifiers,
     - partial entity hydration explícita y detached vía `EntityQuery::partial(...)->getPartial()/firstPartial()` con upgrade posterior vía `refresh()`,
     - partial entity hydration managed vía `EntityQuery::partialManaged(...)->getPartialManaged()/firstPartialManaged()` con dirty-check limitado a loaded fields,
+    - Query Builder con `as(...)`, `join(...)` y `leftJoin(...)` sobre SQL declarativo V1,
     - persistencia de memberships `ManyToMany` mediante reconciliación contra filas reales de la join table,
     - y traduccion automatica en `EntityQuery::where()` / `orderBy()` limitada a asociaciones owning `to-one`, con rechazo explícito de asociaciones `to-many`.
 13. Base de value objects embedded V1 con:
@@ -737,7 +777,7 @@ Las siguientes entradas representan el orden sugerido de ejecucion. No deben mar
 ### Aun no desarrollado con evidencia suficiente
 
 1. Hydration planificada/compilada, caches de metadata y surface ORM ampliada.
-2. Relationships V2 e hidratacion avanzada (joins declarativos, asociaciones parciales/partial hydration relacional, proxies/lazy transparente, control sistémico más profundo de N+1, hydration planificada/compilada y politicas avanzadas de relaciones).
+2. Relationships V2 e hidratacion avanzada (joins ORM guiados por metadata, asociaciones parciales/partial hydration relacional, proxies/lazy transparente, control sistémico más profundo de N+1, hydration planificada/compilada y politicas avanzadas de relaciones).
 3. Value objects avanzados: nested embedded, embedded collection via JSON, value identity/equality helpers.
 4. Security, Resilience, Plugin y Legacy migration runtime.
 5. Capabilities avanzadas, pagination, batch/streaming y distribucion.
@@ -748,16 +788,16 @@ Las siguientes entradas representan el orden sugerido de ejecucion. No deben mar
 
 Profundizar el vertical ORM posterior a `DV-DB-015`, en el siguiente orden natural:
 
-1. **Hydration + Fetch Strategies V2**: joins declarativos sobre `SelectQueryBuilder`, asociaciones parciales/partial hydration relacional, estrategia LAZY/EAGER declarativa por asociación, control sistémico del N+1 más allá de `with(...)`, y base para hidratación planificada/compilada. (bloques 04 Query Builder, 12 Hydration, 13 Relationships)
+1. **Hydration + Fetch Strategies V2**: joins ORM guiados por metadata sobre la base declarativa ya existente en `SelectQueryBuilder`, asociaciones parciales/partial hydration relacional, estrategia LAZY/EAGER declarativa por asociación, control sistémico del N+1 más allá de `with(...)`, y base para hidratación planificada/compilada. (bloques 04 Query Builder, 12 Hydration, 13 Relationships)
 2. **Factories & Seeders V2 ampliados**: comandos generators CLI `make:factory`, `make:seeder`, factory states/sequences nativos, soporte para seeder dependencias ordenado, y SeederRunner con barras de progreso/logger integrado. (Prioridad 7, bloque 18 Factories)
 3. **Repositories avanzados V1**: manifests extensibles para discovery de repositorios en módulos separados, interfaces por entidad + container bindings automáticos, Criteria API typed independiente de SQL, y codegen helpers para clases repositorio. (bloque 119 Repositorios, 32 Integrations)
 4. **Cache de consultas + IdentityMap advanced**: second-level cache opcional driver-agnostic para find + where frecuentes, refresh/merge/detach profundo, y Policy isolation de lifecycle para listeners vía Container resolución (V2 lifecycle listeners con dependency injection, sustituyendo `new $className()` actual).
 
 Motivo:
 
-- la base ORM ya convergió sobre `DatabaseQueryManager` + `TransactionManagerInterface`, incluyendo Types V1, Relaciones ManyToOne/OneToMany/OneToOne/ManyToMany V1, precarga explícita `with(...)`, projection/scalar hydration V1, partial entity hydration detached V1, partial entity hydration managed V1, Embedded V1, Factories + Seeders V1, Repository Factory DI + helpers ergonomicos V1, y Policy layer completo Lifecycle + Cascade + OrphanRemoval V1 cerrado,
+- la base ORM ya convergió sobre `DatabaseQueryManager` + `TransactionManagerInterface`, incluyendo Types V1, Relaciones ManyToOne/OneToMany/OneToOne/ManyToMany V1, precarga explícita `with(...)`, projection/scalar hydration V1, partial entity hydration detached V1, partial entity hydration managed V1, Embedded V1, Factories + Seeders V1, Repository Factory DI + helpers ergonomicos V1, mientras que el query layer ya ofrece joins declarativos V1 reutilizables,
 - la vida scoped (`EntityManager`, `IdentityMap`, `UnitOfWork`, `SeederRunner`, `EntityRepositoryFactory`, `originalCollections` snapshots en UoW) y seguridad para runtime persistente siguen intactas,
-- y el siguiente gap estructural dominante ya no es el modelado relacional básico ni la partial hydration managed de campos locales, sino **cómo ampliar ese modelo hacia relaciones y SQL más ricos**: joins declarativos, asociaciones parciales, fetch strategies declarativas y control del N+1 más profundo antes de abrir capas de codegen o APIs de repositorio más sofisticadas.
+- y el siguiente gap estructural dominante ya no es la ausencia de joins en el query layer, sino **cómo conectar esos joins con metadata ORM e hidratación relacional real**: asociaciones parciales, fetch strategies declarativas y control del N+1 más profundo antes de abrir capas de codegen o APIs de repositorio más sofisticadas.
 
 ## Regla de actualizacion de esta bitacora
 

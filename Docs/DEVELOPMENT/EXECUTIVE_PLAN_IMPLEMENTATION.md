@@ -1270,6 +1270,64 @@ El consumer del ORM ya debe poder trabajar con entidades parciales managed para 
 5. **Cobertura verde**: nueva feature 27 assertions + regresión ORM 31 tests / 552 assertions.
 6. **Documentación DEVELOPMENT actualizada**: DEVELOPMENT_VERSIONS registra DV-DB-019, DEVELOPMENT_MATRIX actualiza filas 10/11/12/29/31, y DEVELOPMENT_GUIDELINES añade reglas duras para managed partial hydration.
 
+## Fase 19 - Query Layer: Declarative Joins V1 (`SelectQueryBuilder::as/join/leftJoin`)
+
+### Documentos fuente principales
+
+- Bloques 04 (Query Builder), 06 (SQL Compiler), 29 (Testing), 31 (Developer Experience).
+- DEVELOPMENT_MATRIX.md filas 04 / 06 / 29 / 31.
+- DEVELOPMENT_GUIDELINES.md sección `#### Query Builder Joins V1 (SelectQueryBuilder::as/join/leftJoin) — Hard rules desde DV-DB-020`.
+
+### Objetivo
+
+Abrir el primer corte útil de joins declarativos en el query layer para dejar una base SQL más rica antes de conectar eso al ORM: alias de tabla, `INNER JOIN`, `LEFT JOIN` y columnas seleccionadas con `AS alias`, todo compilado de forma segura y validado con una feature real sobre SQLite.
+
+### Entregables mínimos
+
+1. **Model / AST extendidos**:
+   - `TableReference` y `TableNode` con alias opcional
+   - `Join` y `JoinNode`
+   - `SelectQuery` / `SelectQueryNode` con colección de joins
+2. **API pública en Query Builder**:
+   - `SelectQueryBuilder::as(string $alias): self`
+   - `SelectQueryBuilder::join(...)`
+   - `SelectQueryBuilder::leftJoin(...)`
+3. **Compiler ampliado**:
+   - compilar `FROM ... AS ...`
+   - compilar `INNER JOIN` / `LEFT JOIN`
+   - compilar columnas `table.column AS alias`
+4. **Compatibilidad operativa**:
+   - `first()`, `count()` y `toSelectQuery()` deben preservar alias + joins
+5. **No alcance de esta fase**:
+   - no joins guiados por metadata ORM
+   - no subqueries en joins
+   - no múltiples cláusulas `ON`
+   - no `GROUP BY`, `HAVING`, `UNION`
+6. **Pruebas GREEN obligatorias**:
+   - unitaria de SQL compilado con joins + alias
+   - feature SQLite con ejecución real de joins
+
+### Pruebas mínimas
+
+1. Unit `DatabaseQueryCompilerTest::test_it_compiles_select_queries_with_inner_and_left_joins_and_aliases` 2 assertions
+2. Feature `DatabaseQueryBuilderExecutionTest::test_query_builder_executes_inner_and_left_joins_against_sqlite` 6 assertions
+3. Regresión GREEN query layer:
+   - `DatabaseQueryCompilerTest`
+   - `DatabaseQueryBuilderExecutionTest`
+   - total: 5 tests / 25 assertions
+
+### Criterio de salida
+
+El consumer del query layer ya debe poder expresar joins relacionales simples sin bajar a SQL manual, y el compilador debe mantener quoting, aliases y bindings en buen estado. El ORM todavía no consume estos joins automáticamente; este corte sólo prepara esa integración posterior.
+
+### Resultado del corte DV-DB-020
+
+1. **Joins declarativos V1 operativos** en `SelectQueryBuilder`.
+2. **Alias de tabla base y tablas joined** soportados de forma explícita.
+3. **Column aliases en `SELECT`** compilados correctamente.
+4. **Cobertura verde**: nueva unitaria 2 assertions + nueva feature 6 assertions + regresión query layer 5 tests / 25 assertions.
+5. **Documentación DEVELOPMENT actualizada**: DEVELOPMENT_VERSIONS registra DV-DB-020, DEVELOPMENT_MATRIX actualiza filas 04/06/29/31, y DEVELOPMENT_GUIDELINES añade reglas duras para joins declarativos V1.
+
 ## Roadmap resumido
 
 1. Fase 1: Bootstrap, Config y Runtime Scope
@@ -1290,6 +1348,7 @@ El consumer del ORM ya debe poder trabajar con entidades parciales managed para 
 16. Fase 16: ORM Projection / Scalar Hydration V1 (DV-DB-017: `EntityQuery::select(...)->rows()/firstRow()/pluck()/value()`, resolución ORM-aware de fields/embedded/owning to-one, conversion tipada de valores proyectados, guardrails contra partial entity hydration y mezcla con `with(...)`, Feature 18 assertions + regresión ORM 29/502 GREEN)
 17. Fase 17: ORM Partial Entity Hydration V1 (DV-DB-018: `EntityQuery::partial(...)->getPartial()/firstPartial()`, entidades parciales detached, auto-inclusión de PK, embedded parcial, guardrails en persist/remove, upgrade vía `refresh()`, Feature 23 assertions + regresión ORM 30/525 GREEN)
 18. Fase 18: ORM Managed Partial Entity Hydration V1 (DV-DB-019: `EntityQuery::partialManaged(...)->getPartialManaged()/firstPartialManaged()`, snapshots parciales en UnitOfWork, dirty-check/update limitados al subset loaded, bloqueo de remove, upgrade vía `find()`/`refresh()`, Feature 27 assertions + regresión ORM 31/552 GREEN)
+19. Fase 19: Query Layer Declarative Joins V1 (DV-DB-020: `SelectQueryBuilder::as()/join()/leftJoin()`, aliases en `TableReference`/`TableNode`, `Join`/`JoinNode`, compilación `FROM ... AS ...` + `JOIN` + `column AS alias`, unitaria 2 assertions + feature SQLite 6 assertions + regresión query layer 5/25 GREEN)
 
 ## Regla de control ejecutivo
 
