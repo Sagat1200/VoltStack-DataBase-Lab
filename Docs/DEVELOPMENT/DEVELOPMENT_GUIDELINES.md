@@ -311,6 +311,99 @@ Toda implementación o extensión sobre `Lifecycle Callbacks`, `Cascade Operatio
 - **PreUpdate context typed y no-mutation SQL**: el contexto pasado a `dispatchLifecycle('preUpdate', $entity, [...])` **DEBE** contener keys fijas `changes: array<string, mixed>` (campos que realmente cambiaron entre snapshot y actual), `currentValues: array<string, mixed>` (extractForWrite actual completo), `originalSnapshot: array<string, mixed>` (snapshot al registerManaged). Listeners pueden mutar la entity PHP durante PrePersist/PreUpdate (ej: setear updatedAt) y el cambio debe reflejarse en el SQL/values de INSERT/UPDATE (populateManyToOneForeignKeys y changeset/extract se calculan DESPUÉS de PrePersist pero ANTES de extractForWrite actual; en preUpdate el changeset ya fue calculado, mutaciones hechas por listener en PreUpdate NO entran al SQL update del mismo flush — la mutación se reflejará en el próximo flush como dirty-check). Esta restricción evita doble-cálculo costoso de changesets cuando un listener modifica 20 campos.
 - **TODOS los lifecycle callbacks y listeners (method-level reflection + class instance closures) se invocan dentro del try block de `TransactionManager::transaction()`**: un throw Throwable dentro de un listener aborta el flush completo y produce rollback automático, sin inserts parciales persistidos. No hay policy de "skip listener failure" configurable en V1; ese feature requiere V2 Event Bus framework-wide.
 
+#### Relationships Ampliados (OneToOne / ManyToMany / JoinTable) — Hard rules desde DV-DB-015
+
+Toda implementación o extensión sobre `OneToOne`, `ManyToMany` y `JoinTable` en el ORM **DEBE** respetar:
+
+- **Metadata shell→final obligatoria con fallback controlado**: `EntityMetadataRegistry::build()` debe seguir resolviendo asociaciones en dos fases. Si una asociación inverse `mappedBy` todavía no aparece en metadata final durante el shell build, la resolución puede caer a reflection directa del property target para leer `#[OneToOne]`, `#[ManyToMany]` y `#[JoinTable]`, pero ese fallback es estrictamente de bootstrap; la metadata final sigue siendo la fuente de verdad observable en runtime.
+- **Ownership canónico sin ambigüedad**: en `OneToOne` y `ManyToMany` debe existir exactamente un lado owning y, si hay lado inverse, éste se expresa vía `mappedBy` apuntando a una asociación real del target. El lado inverse nunca define su propia estrategia física de persistencia; siempre hereda la del owning-side.
+- **`#[JoinTable]` sólo vive en el owning-side `ManyToMany`**: el lado inverse no declara nombre de tabla ni columnas propias. `joinTable`, `joinTableSourceColumn` y `joinTableTargetColumn` se derivan desde la definición owning-side y deben quedar consistentes para ambos lados en `EntityAssociationMetadata`.
+- **Las queries por nombre de asociación sólo son válidas para relaciones owning `to-one`**: `EntityQuery::where()` y `orderBy()` pueden traducir asociaciones `ManyToOne` / owning `OneToOne` a columna FK. Cualquier asociación `to-many` o inverse-side debe fallar explícitamente con error claro; no se permiten semánticas implícitas ni JOINs mágicos en V1.
+- **El estado mutable de colecciones sigue siendo scoped**: snapshots/diffs de asociaciones `to-many`, memberships actuales y resultados intermedios de reconciliación de join-tables deben vivir en `UnitOfWork` o `EntityManager` scoped. `EntityAssociationMetadata` y `EntityMetadata` permanecen stateless/singleton-safe para runtimes persistentes como FrankenPHP o RoadRunner.
+- **Persistencia `ManyToMany` reconciliada contra la DB real**: la escritura de memberships no puede depender únicamente de snapshots en memoria, porque entidades recién insertadas o sincronizadas pueden dejar los snapshots alineados con la colección actual. El source of truth para altas/bajas de join rows es la comparación entre colección owning actual e IDs existentes realmente en la join table.
+- **Delete cleanup de join-tables es obligatorio**: al remover una entidad que participa en asociaciones `ManyToMany`, el runtime debe limpiar las filas de la tabla intermedia relacionadas con su identifier antes o durante el path de borrado, evitando memberships huérfanos.
+- **Carga relacional explícita y acotada en V1**: `loadToOne()` soporta owning to-one e inverse `OneToOne` por reverse lookup; `loadToMany()` soporta `OneToMany` y `ManyToMany` via join table. No se introducen proxies, lazy-transparente ni eager joins declarativos dentro de DV-DB-015; cualquier salto a fetch strategies V2 requiere un nuevo corte DV-DB.
+- **Backward compatibility estricta**: entidades que sólo usan `ManyToOne`/`OneToMany`, o que no declaran asociaciones nuevas, deben seguir funcionando sin cambios. No se amplía el constructor de `EntityManager`, no se alteran los bindings públicos del provider y no se rompe la carga previa de metadata.
+- **Prueba mínima obligatoria**: todo cambio en este bloque debe traer al menos (1) unit tests de metadata para owning/inverse `OneToOne` y `ManyToMany`, incluyendo fallback two-phase, y (2) feature test SQLite validando query owning to-one, inverse `OneToOne`, insert/remove ManyToMany, cascade persist de target nuevo y cleanup por delete.
+
+#### Explicit Batch Preloading (`EntityQuery::with`) — Hard rules desde DV-DB-016
+
+Toda implementación o extensión sobre `EntityQuery::with(...)`, predicates `IN` y batch preload ORM **DEBE** respetar:
+
+- **Precarga explícita, nunca implícita**: el ORM no debe disparar batch preload automáticamente por detectar acceso posterior a propiedades. La activación V1 ocurre sólo cuando el consumer llama `EntityQuery::with('assoc', ...)` antes de `get()` o `first()`.
+- **Separación estricta de responsabilidades**: `SelectQueryBuilder` y `SqlCompiler` sólo aportan el primitive `IN` necesario para cargar por lotes; la resolución de identidad, ensamblaje de asociaciones y asignación a propiedades pertenece exclusivamente a `EntityManager`/`IdentityMap`, no al compilador SQL.
+- **Sin joins declarativos encubiertos**: DV-DB-016 NO autoriza introducir `JOIN` en `SelectQueryBuilder` ni semánticas mágicas en `where()/orderBy()` para relaciones `to-many`. `with(...)` carga primero entidades root y luego resuelve asociaciones por consultas adicionales controladas.
+- **`with(...)` sólo acepta asociaciones reales del root entity**: nombres vacíos se ignoran; asociaciones inexistentes deben lanzar `RuntimeException` clara. No se soportan paths anidados (`comments.author`) ni árboles profundos en V1 sin un nuevo corte DV-DB.
+- **Reuse de identidad obligatorio**: toda entidad objetivo obtenida en un preload debe pasar por `hydrateManaged()`/`IdentityMap`; si varias roots apuntan al mismo target, deben reusar exactamente la misma instancia administrada.
+- **Snapshots refreshed tras precarga `to-many`**: cuando `with(...)` llena una colección `OneToMany` o `ManyToMany` de una entidad managed, `UnitOfWork` debe refrescar sus snapshots scoped inmediatamente para que un `flush()` posterior detecte adds/removes reales sobre esa colección precargada.
+- **Compatibilidad total con runtime persistente**: cualquier grouping temporal, mapas `sourceId -> targets`, listas de identifiers y resultados de batch preload viven sólo dentro del scope actual. Metadata singleton y providers públicos no almacenan estado mutable de esas precargas.
+- **Semántica honesta de alcance**: V1 cubre owning `to-one`, inverse `OneToOne`, `OneToMany` y `ManyToMany` por lotes. No cubre partial hydration, proxies lazy, fetch plans compilados, joins SQL ni estrategias declarativas `EAGER/LAZY`; eso pertenece a la siguiente fase.
+- **Predicates `IN` deben ser seguros**: el compilador debe expandir placeholders por valor, rechazar usos inválidos (`IN` con no-array) y manejar listas vacías sin generar SQL inválido.
+- **Prueba mínima obligatoria**: cada ampliación de este bloque debe traer feature tests sobre SQLite cubriendo `with(...)` para asociaciones to-one y to-many, reuse de identidad donde corresponda, y al menos un caso donde una colección `ManyToMany` precargada se muta y luego `flush()` actualiza la join table correctamente.
+
+#### Projection / Scalar Hydration ORM (`EntityQuery::select`) — Hard rules desde DV-DB-017
+
+Toda implementación o extensión sobre `EntityQuery::select(...)`, `rows()`, `firstRow()`, `pluck()` y `value()` **DEBE** respetar:
+
+- **Projection mode explícito, nunca parcial implícito**: cuando una query entra en modo `select(...)`, deja de ser una query de entity hydration. `get()` y `first()` deben fallar explícitamente; el consumer debe usar `rows()`, `firstRow()`, `pluck()` o `value()`.
+- **No mezclar projection con preload entity-mode**: `with(...)` y `select(...)` no se combinan en la misma query V1. Una query o hidrata entidades/preloads, o devuelve resultados escalares/proyectados; no ambas cosas a la vez.
+- **Resolución ORM-aware obligatoria**: `select(...)` debe aceptar al menos:
+  - fields escalares de entidad,
+  - embedded paths (`price.amount`),
+  - y asociaciones owning `to-one` como identifier escalar del target.
+  Debe rechazar asociaciones inverse-side y `to-many` con error claro.
+- **Conversión tipada de vuelta a PHP**: valores proyectados deben pasar por el mismo pipeline de cast ya disponible para fields y embedded-inner fields (`enum`, `datetime_immutable`, `json`, etc.). Proyectar no significa degradar silenciosamente todo a strings crudos.
+- **Sin prometer partial entities**: este corte no autoriza crear instancias entidad parcialmente hidratadas, ni snapshots parciales, ni refresh parciales. Eso pertenece a una fase posterior de partial hydration real.
+- **Sin joins mágicos**: proyectar una asociación owning `to-one` devuelve el identifier FK ya disponible en la tabla root; no autoriza introducir joins SQL automáticos ni materializar entidades target.
+- **Compatibilidad total con Query Builder actual**: `select(...)` ORM debe apoyarse sobre el `SelectQueryBuilder` existente sin romper `where()`, `orderBy()`, `limit()`, `offset()` ni `count()`.
+- **Guardrails antes que magia**: si el usuario selecciona campos vacíos, asociaciones no soportadas o intenta hidratar entidades completas desde una selección parcial, la API debe fallar con mensajes directos y explicables.
+- **Prueba mínima obligatoria**: toda ampliación de este bloque debe cubrir feature tests con SQLite para:
+  - scalar fields tipados,
+  - embedded paths,
+  - owning association identifier projection,
+  - helpers `pluck()` y `value()`,
+  - y el guardrail que bloquea `get()/first()` en projection mode.
+
+#### Partial Entity Hydration V1 (`EntityQuery::partial`) — Hard rules desde DV-DB-018
+
+Toda implementación o extensión sobre `EntityQuery::partial(...)`, `getPartial()` y `firstPartial()` **DEBE** respetar:
+
+- **Partial entities nacen detached**: una entidad parcialmente hidratada NO entra a `IdentityMap` ni a `UnitOfWork` en este corte. No debe aparentar estar managed cuando no lo está.
+- **Upgrade explícito vía `refresh()`**: si el consumer quiere convertir una partial entity en entidad completa y tracked, debe llamar `EntityManager::refresh($entity)`. Ese paso debe rehidratar desde DB, registrar la entidad y retirar cualquier marca interna de partial state.
+- **Sin persist/remove directo**: `persist()` y `remove()` deben rechazar partial entities con error claro. No se permiten inserts, updates ni deletes desde una entidad sólo parcialmente cargada.
+- **Auto-incluir identifier siempre**: aunque el consumer no seleccione la PK, `partial(...)` debe incluirla internamente para que la entidad sea refreshable y tenga identidad consistente.
+- **Alcance V1 deliberadamente acotado**: partial hydration soporta scalar fields y embedded paths. No soporta asociaciones, joins, preload combinado, snapshots parciales managed ni dirty tracking de campos no cargados.
+- **Sin mezclar modos**: `partial(...)` no se combina con `with(...)` ni con `select(...)` en la misma query. Cada modo (`entity`, `projection`, `partial`) debe permanecer explícito y mutuamente excluyente.
+- **Propiedades no cargadas pueden permanecer sin inicializar**: eso es correcto en V1. La implementación no debe forzar valores dummy para aparentar completitud, salvo defaults ya propios de la clase PHP.
+- **Embedded parciales son válidos**: si sólo algunas columnas de un embeddable fueron seleccionadas, el value object puede materializarse parcialmente con sólo esos inner fields inicializados.
+- **Guardrails antes que magia**: `get()` / `first()` deben fallar en partial mode; el consumer debe usar `getPartial()` / `firstPartial()`.
+- **Prueba mínima obligatoria**: toda ampliación de este bloque debe traer feature tests sobre SQLite cubriendo:
+  - entidad parcial detached,
+  - properties no seleccionadas sin inicializar cuando aplique,
+  - embedded parcial,
+  - rechazo de `persist()` o `remove()` directo,
+  - y upgrade exitoso a entidad managed completa vía `refresh()`.
+
+#### Managed Partial Entity Hydration V1 (`EntityQuery::partialManaged`) — Hard rules desde DV-DB-019
+
+Toda implementación o extensión sobre `EntityQuery::partialManaged(...)`, `getPartialManaged()` y `firstPartialManaged()` **DEBE** respetar:
+
+- **Managed sí, pero acotado al subset loaded**: una entidad managed-partial entra a `IdentityMap` y `UnitOfWork`, pero su snapshot y dirty-check cubren únicamente los fields explícitamente cargados.
+- **Auto-incluir identifier siempre**: la PK debe formar parte del subset tracked, aunque el consumer no la seleccione.
+- **Write path limitado a loaded fields**: `dirtyManagedEntities()` y `flushUpdate()` no pueden inferir cambios ni escribir columnas que no fueron cargadas por la query partial-managed.
+- **No degradar otras columnas por defaults PHP**: propiedades con default de clase (por ejemplo arrays vacíos) no deben generar updates sobre columnas no seleccionadas.
+- **Upgrade automático permitido**: `find()` o `refresh()` pueden completar una managed-partial entity en la misma instancia PHP, retirándola del modo parcial y sincronizando snapshot completo.
+- **Remove bloqueado hasta completar**: una entidad managed-partial no se elimina directamente; primero debe convertirse a entidad completa (`refresh()` o `find()` que la complete) para evitar cascadas o deletes basados en asociaciones no cargadas.
+- **Asociaciones siguen fuera del alcance**: `partialManaged(...)` soporta scalar fields y embedded paths; no soporta asociaciones parciales, colecciones parciales, joins ni preload combinado.
+- **Loops relacionales deben ignorar managed partials**: orphanRemoval, diff de ManyToMany, cascade graph traversal que dependa de asociaciones cargadas y lógica similar no deben asumir que una managed-partial expone un grafo relacional completo.
+- **Sin mezclar modos**: `partialManaged(...)` no se combina con `with(...)`, `select(...)` ni `partial(...)` en la misma query.
+- **Prueba mínima obligatoria**: toda ampliación de este bloque debe cubrir feature tests sobre SQLite para:
+  - entidad partial-managed en estado `Managed`,
+  - update sólo de fields cargados,
+  - verificación de que columnas no cargadas permanecen intactas,
+  - bloqueo de `remove()` sobre managed-partial,
+  - y upgrade a entidad completa vía `find()` o `refresh()`.
+
 ### Security, Telemetry, CLI y Plugins
 
 Todo trabajo sobre `216-340` debe respetar:
