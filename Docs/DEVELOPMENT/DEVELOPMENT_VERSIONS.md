@@ -14,9 +14,9 @@ Sirve como control operativo de:
 
 ## Corte actual
 
-- Fecha de actualizacion: `2026-10-02`
-- Estado general: `Bootstrap, acceso, Execution, Query, Schema, Migrations, Transaction, surface publica minima, Query Builder con joins declarativos V1, SQL Compiler con JOIN/alias support V1, ORM minimo, types ORM base, relaciones ManyToOne/OneToMany bidireccionales V1, value objects embedded multi-columna V1, Factories + Seeders minimo V1, Repository Factory con DI tipado + helpers ergonomicos V1, ORM Lifecycle + Cascade + OrphanRemoval V1, Relationships Ampliados V1 (OneToOne bidireccional + ManyToMany con JoinTable declarativo), explicit batch preloading V1 via EntityQuery::with(...), projection/scalar hydration ORM V1, partial entity hydration explícita V1 (detached + refreshable), y partial entity hydration managed V1 implementados`
-- Foco del corte: `cerrar DV-DB-020 con soporte declarativo de joins en SelectQueryBuilder/SelectQuery/AST/SqlCompiler, alias de tabla base vía as(...), inner join y left join con ON column-to-column, soporte SELECT column AS alias, nueva feature SQLite del query layer 6 assertions, nueva unitaria de compilación 2 assertions y regresión query layer green (5 tests/25 assertions)`
+- Fecha de actualizacion: `2026-10-04`
+- Estado general: `Bootstrap, acceso, Execution, Query, Schema, Migrations, Transaction, surface publica minima, Query Builder con joins declarativos V1, SQL Compiler con JOIN/alias support V1, ORM minimo, joins ORM guiados por metadata V1 para asociaciones to-one y to-many en querying/proyección, eager hydration joined de resultados de entidad para relaciones to-one y colecciones to-many via get(), types ORM base, relaciones ManyToOne/OneToMany bidireccionales V1, value objects embedded multi-columna V1, Factories + Seeders minimo V1, Repository Factory con DI tipado + helpers ergonomicos V1, ORM Lifecycle + Cascade + OrphanRemoval V1, Relationships Ampliados V1 (OneToOne bidireccional + ManyToMany con JoinTable declarativo), explicit batch preloading V1 via EntityQuery::with(...), projection/scalar hydration ORM V1, partial entity hydration explícita V1 (detached + refreshable), y partial entity hydration managed V1 implementados`
+- Foco del corte: `cerrar DV-DB-023 con joins ORM to-many V1 en EntityQuery::join()/leftJoin(), soporte OneToMany y ManyToMany, deduplicación de roots en get(), materialización de colecciones sin duplicados, count() root-aware, resincronización de snapshots de colección y guardrail explícito para first() sobre joins to-many, nueva feature ORM 16 assertions y regresión vertical ORM green (34 tests/586 assertions)`
 
 ## Versionado de desarrollo
 
@@ -657,6 +657,122 @@ Las siguientes entradas representan el orden sugerido de ejecucion. No deben mar
   - este corte sigue deliberadamente acotado al query layer: no resuelve todavía joins guiados por metadata ORM ni hydration relacional automática,
   - la base ya está lista para que el siguiente bloque conecte esos joins con estrategias de carga más ricas del ORM.
 
+### DV-DB-021
+
+- Estado: `Implementado`
+- Bloque documental: `10 ORM`, `12 Hydration`, `13 Relationships`, `29 Testing`, `31 Developer Experience`
+- Alcance objetivo:
+  - abrir el primer puente entre metadata ORM y joins del query layer,
+  - soportar `join()` / `leftJoin()` sobre asociaciones root `to-one`,
+  - permitir `where/orderBy/select/value/pluck` sobre fields del target joined usando paths `association.field`,
+  - mantener la hidratación de entidades root segura en presencia de joins,
+  - y dejar explícito que este corte todavía no materializa automáticamente la asociación joined.
+- Evidencia principal:
+  - **API pública nueva en ORM Query surface:**
+    - `vendor/voltstack/framework/src/Quantum/Database/ORM/EntityQuery.php`
+    - nuevos métodos `join(string $association, ?string $alias = null): self` y `leftJoin(string $association, ?string $alias = null): self`
+  - **Traducción metadata → SQL join:**
+    - soporte para asociaciones `ManyToOne`, `OneToOne` owning y `OneToOne` inverse en el root query
+    - resolución de columnas `ON` usando `EntityAssociationMetadata::{sourceColumn,targetColumn}` y metadata del root/target
+    - alias root automático `t0` para evitar colisiones y preservar entity hydration con `t0.*`
+  - **Capacidades nuevas del querying ORM:**
+    - `where('post.title', ...)`
+    - `orderBy('profile.bio')`
+    - `select('body', 'post.title')->rows()`
+    - `value('post.title')` / `pluck(...)` sobre fields joined
+  - **Guardrails del corte:**
+    - joins sólo para asociaciones root `to-one`
+    - rechazo explícito de joins `to-many`
+    - `partial()` / `partialManaged()` no se combinan con joined-association mode en este V1
+    - la asociación joined no se hidrata automáticamente en la propiedad PHP; este corte es de querying/proyección, no de materialización relacional completa
+  - **Pruebas GREEN:**
+    - `vendor/voltstack/framework/tests/Feature/DatabaseOrmFeatureTest.php` — nueva prueba `test_entity_query_can_join_to_one_associations_via_metadata_for_filters_and_projections` (8 assertions) validando `ManyToOne` + `OneToOne` inverse, proyección joined, filtro por field joined, `value()` joined y rechazo de join `to-many`
+    - regresión GREEN vertical ORM: `32 tests / 560 assertions`
+    - regresión GREEN query layer: `5 tests / 25 assertions` (con `2 deprecations` heredadas de PHPUnit en ese subset)
+- Resultado:
+  - `Quantum/Database` ya conecta metadata ORM con joins declarativos del query layer para casos `to-one`,
+  - el consumer puede filtrar, ordenar y proyectar por fields del target sin bajar a SQL ni mapear joins manualmente,
+  - entity hydration root sigue siendo segura porque el query root se reduce a `t0.*` cuando hay joins y no estamos en projection mode,
+  - el sistema sigue sin vender eager hydration automática del target joined ni joins ORM sobre colecciones,
+  - y el siguiente gap real pasa a ser cómo usar esta base para hydration relacional más rica o fetch strategies declarativas.
+
+### DV-DB-022
+
+- Estado: `Implementado`
+- Bloque documental: `10 ORM`, `12 Hydration`, `13 Relationships`, `29 Testing`, `31 Developer Experience`
+- Alcance objetivo:
+  - cerrar el siguiente paso después del joined querying `to-one`,
+  - permitir que `get()` y `first()` materialicen automáticamente la asociación `to-one` ya joined,
+  - reutilizar `IdentityMap` para el target joined,
+  - preservar la hidratación segura de la entidad root,
+  - y seguir dejando fuera `to-many`, grafos profundos y combinaciones con partial modes.
+- Evidencia principal:
+  - **Hydration joined en entity mode:**
+    - `vendor/voltstack/framework/src/Quantum/Database/ORM/EntityQuery.php`
+    - `get()` y `first()` detectan joined-association mode y ejecutan una selección interna `t0.*` + columnas aliased del target
+    - nueva hidratación desde una sola fila SQL para root + target joined `to-one`
+  - **Consistencia local + runtime:**
+    - la entidad target joined se hidrata vía `EntityManager::hydrateManaged(...)`, reusando `IdentityMap`
+    - `leftJoin()` sin fila target asigna `null`
+    - back-reference local se enlaza sólo cuando la metadata inversa también es `to-one`
+    - asociaciones ya materializadas por join no vuelven a pasar por preload redundante en `with(...)`
+  - **Scope deliberadamente acotado:**
+    - sólo asociaciones root `to-one`
+    - no joins `to-many`
+    - no hydration transitiva de asociaciones del target
+    - no mezcla con `partial()` / `partialManaged()`
+  - **Pruebas GREEN:**
+    - `vendor/voltstack/framework/tests/Feature/DatabaseOrmFeatureTest.php` — nueva prueba `test_entity_query_joined_to_one_associations_are_hydrated_on_entity_results` (11 assertions) validando `ManyToOne` joined, reuse de `IdentityMap`, `OneToOne` owning joined, back-reference local y `leftJoin()` inverse con target ausente
+    - regresión GREEN vertical ORM: `33 tests / 571 assertions`
+    - regresión GREEN query layer: `5 tests / 25 assertions` (con `2 deprecations` heredadas de PHPUnit en ese subset)
+- Resultado:
+  - `Quantum/Database` ya no se limita a querying/proyección sobre joins ORM `to-one`: ahora también puede materializar la asociación joined en resultados de entidad,
+  - la entity hydration root sigue protegida por selección aislada `t0.*`,
+  - el target joined reutiliza `IdentityMap` y puede mantener consistencia local con back-reference `to-one`,
+  - el sistema todavía no vende joins ORM `to-many`, hydration relacional profunda ni fetch strategies declarativas completas,
+  - y el siguiente gap real pasa a ser cómo extender esta base a relaciones `to-many`, asociaciones parciales y planificación de hidratación más rica.
+
+### DV-DB-023
+
+- Estado: `Implementado`
+- Bloque documental: `10 ORM`, `12 Hydration`, `13 Relationships`, `29 Testing`, `31 Developer Experience`
+- Alcance objetivo:
+  - extender joins ORM metadata-guided al caso `to-many`,
+  - soportar `OneToMany` y `ManyToMany` en querying/proyección,
+  - permitir que `get()` deduzca roots repetidos y materialice colecciones,
+  - mantener `IdentityMap` y snapshots de `UnitOfWork` coherentes,
+  - y dejar fuera `first()`/paginación root-aware hasta tener una semántica segura para joins de colección.
+- Evidencia principal:
+  - **Joins ORM `to-many` ya operativas en EntityQuery:**
+    - `vendor/voltstack/framework/src/Quantum/Database/ORM/EntityQuery.php`
+    - `join(...)/leftJoin(...)` ahora soportan `OneToMany` y `ManyToMany`
+    - `where/orderBy/select/rows()/pluck()/value()` pueden usar paths joined sobre colecciones
+  - **Hydration entity-mode con deduplicación:**
+    - `get()` agrupa por identifier del root y evita duplicados de entidad
+    - las colecciones materializadas no repiten targets ya vistos
+    - `leftJoin()` sin targets produce `[]`
+    - `first()` pasa a rechazarse cuando hay joins `to-many`
+    - `count()` cuenta roots en lugar de filas multiplicadas por el join
+  - **Integración runtime limpia:**
+    - `vendor/voltstack/framework/src/Quantum/Database/ORM/EntityManager.php` añade `snapshotCollections()` para resincronizar snapshots de `UnitOfWork` tras materializar colecciones joined
+    - `IdentityMap` se reutiliza tanto para roots como para targets joined
+    - en `OneToMany`, el back-reference `ManyToOne` del target puede quedar enlazado al root ya materializado
+  - **Scope deliberadamente acotado:**
+    - `to-many` joined sólo se materializa en `get()`
+    - `first()` no intenta fingir una colección completa con `LIMIT 1`
+    - no hay todavía paginación root-aware sobre joins `to-many`
+    - no hay hydration transitiva profunda ni asociaciones parciales
+  - **Pruebas GREEN:**
+    - `vendor/voltstack/framework/tests/Feature/DatabaseOrmFeatureTest.php` — nueva prueba `test_entity_query_can_join_to_many_associations_with_root_deduplication_and_collection_hydration` (16 assertions) validando `OneToMany`, `ManyToMany`, deduplicación de roots, `leftJoin()` vacío, `count()` root-aware y rechazo de `first()`
+    - regresión GREEN vertical ORM: `34 tests / 586 assertions`
+    - regresión GREEN query layer: `5 tests / 25 assertions` (con `2 deprecations` heredadas de PHPUnit en ese subset)
+- Resultado:
+  - `Quantum/Database` ya cubre joins ORM `to-one` y `to-many` dentro de `EntityQuery`,
+  - el consumer puede proyectar por fields joined de colecciones y también obtener entidades root con sus colecciones materializadas en `get()`,
+  - roots y targets siguen reutilizando `IdentityMap`, y los snapshots de colección quedan coherentes para posteriores `flush()`,
+  - el sistema sigue siendo explícito al bloquear `first()` para joins `to-many` y al no prometer paginación segura por root todavía,
+  - y el siguiente gap real pasa a ser cómo construir fetch strategies más maduras: paginación root-aware, asociaciones parciales y planificación/hydration relacional más profunda.
+
 ## Estado consolidado del sistema Database
 
 ### Ya disponible hoy
@@ -734,6 +850,7 @@ Las siguientes entradas representan el orden sugerido de ejecucion. No deben mar
     - partial entity hydration explícita y detached vía `EntityQuery::partial(...)->getPartial()/firstPartial()` con upgrade posterior vía `refresh()`,
     - partial entity hydration managed vía `EntityQuery::partialManaged(...)->getPartialManaged()/firstPartialManaged()` con dirty-check limitado a loaded fields,
     - Query Builder con `as(...)`, `join(...)` y `leftJoin(...)` sobre SQL declarativo V1,
+    - ORM Query surface con `join(...)` / `leftJoin(...)` guiados por metadata para querying/proyección sobre asociaciones root `to-one` y `to-many`,
     - persistencia de memberships `ManyToMany` mediante reconciliación contra filas reales de la join table,
     - y traduccion automatica en `EntityQuery::where()` / `orderBy()` limitada a asociaciones owning `to-one`, con rechazo explícito de asociaciones `to-many`.
 13. Base de value objects embedded V1 con:
@@ -777,7 +894,7 @@ Las siguientes entradas representan el orden sugerido de ejecucion. No deben mar
 ### Aun no desarrollado con evidencia suficiente
 
 1. Hydration planificada/compilada, caches de metadata y surface ORM ampliada.
-2. Relationships V2 e hidratacion avanzada (joins ORM guiados por metadata, asociaciones parciales/partial hydration relacional, proxies/lazy transparente, control sistémico más profundo de N+1, hydration planificada/compilada y politicas avanzadas de relaciones).
+2. Relationships V2 e hidratacion avanzada (paginación/root-limiting segura sobre joins ORM `to-many`, asociaciones parciales/partial hydration relacional, proxies/lazy transparente, control sistémico más profundo de N+1, hydration planificada/compilada y politicas avanzadas de relaciones).
 3. Value objects avanzados: nested embedded, embedded collection via JSON, value identity/equality helpers.
 4. Security, Resilience, Plugin y Legacy migration runtime.
 5. Capabilities avanzadas, pagination, batch/streaming y distribucion.
@@ -788,16 +905,16 @@ Las siguientes entradas representan el orden sugerido de ejecucion. No deben mar
 
 Profundizar el vertical ORM posterior a `DV-DB-015`, en el siguiente orden natural:
 
-1. **Hydration + Fetch Strategies V2**: joins ORM guiados por metadata sobre la base declarativa ya existente en `SelectQueryBuilder`, asociaciones parciales/partial hydration relacional, estrategia LAZY/EAGER declarativa por asociación, control sistémico del N+1 más allá de `with(...)`, y base para hidratación planificada/compilada. (bloques 04 Query Builder, 12 Hydration, 13 Relationships)
+1. **Hydration + Fetch Strategies V2**: extender la base actual de joins ORM `to-one` + `to-many` hacia paginación/root-limiting segura, asociaciones parciales/partial hydration relacional, estrategia LAZY/EAGER declarativa por asociación, control sistémico del N+1 más allá de `with(...)`, y base para hidratación planificada/compilada. (bloques 04 Query Builder, 12 Hydration, 13 Relationships)
 2. **Factories & Seeders V2 ampliados**: comandos generators CLI `make:factory`, `make:seeder`, factory states/sequences nativos, soporte para seeder dependencias ordenado, y SeederRunner con barras de progreso/logger integrado. (Prioridad 7, bloque 18 Factories)
 3. **Repositories avanzados V1**: manifests extensibles para discovery de repositorios en módulos separados, interfaces por entidad + container bindings automáticos, Criteria API typed independiente de SQL, y codegen helpers para clases repositorio. (bloque 119 Repositorios, 32 Integrations)
 4. **Cache de consultas + IdentityMap advanced**: second-level cache opcional driver-agnostic para find + where frecuentes, refresh/merge/detach profundo, y Policy isolation de lifecycle para listeners vía Container resolución (V2 lifecycle listeners con dependency injection, sustituyendo `new $className()` actual).
 
 Motivo:
 
-- la base ORM ya convergió sobre `DatabaseQueryManager` + `TransactionManagerInterface`, incluyendo Types V1, Relaciones ManyToOne/OneToMany/OneToOne/ManyToMany V1, precarga explícita `with(...)`, projection/scalar hydration V1, partial entity hydration detached V1, partial entity hydration managed V1, Embedded V1, Factories + Seeders V1, Repository Factory DI + helpers ergonomicos V1, mientras que el query layer ya ofrece joins declarativos V1 reutilizables,
+- la base ORM ya convergió sobre `DatabaseQueryManager` + `TransactionManagerInterface`, incluyendo Types V1, Relaciones ManyToOne/OneToMany/OneToOne/ManyToMany V1, precarga explícita `with(...)`, projection/scalar hydration V1, partial entity hydration detached V1, partial entity hydration managed V1, Embedded V1, Factories + Seeders V1, Repository Factory DI + helpers ergonomicos V1, y ahora también querying + eager hydration de joins ORM `to-one` y `to-many` en `get()`,
 - la vida scoped (`EntityManager`, `IdentityMap`, `UnitOfWork`, `SeederRunner`, `EntityRepositoryFactory`, `originalCollections` snapshots en UoW) y seguridad para runtime persistente siguen intactas,
-- y el siguiente gap estructural dominante ya no es la ausencia de joins en el query layer, sino **cómo conectar esos joins con metadata ORM e hidratación relacional real**: asociaciones parciales, fetch strategies declarativas y control del N+1 más profundo antes de abrir capas de codegen o APIs de repositorio más sofisticadas.
+- y el siguiente gap estructural dominante ya no es la ausencia de joins ORM `to-many`, sino **cómo volver esa capacidad verdaderamente madura**: paginación/root-limiting segura, asociaciones parciales, fetch strategies declarativas y control del N+1 más profundo antes de abrir capas de codegen o APIs de repositorio más sofisticadas.
 
 ## Regla de actualizacion de esta bitacora
 

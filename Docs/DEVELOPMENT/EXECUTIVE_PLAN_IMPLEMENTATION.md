@@ -1328,6 +1328,204 @@ El consumer del query layer ya debe poder expresar joins relacionales simples si
 4. **Cobertura verde**: nueva unitaria 2 assertions + nueva feature 6 assertions + regresión query layer 5 tests / 25 assertions.
 5. **Documentación DEVELOPMENT actualizada**: DEVELOPMENT_VERSIONS registra DV-DB-020, DEVELOPMENT_MATRIX actualiza filas 04/06/29/31, y DEVELOPMENT_GUIDELINES añade reglas duras para joins declarativos V1.
 
+## Fase 20 - ORM: Metadata-Guided To-One Joins V1 (`EntityQuery::join/leftJoin`)
+
+### Documentos fuente principales
+
+- Bloques 10 (ORM), 12 (Hydration), 13 (Relationships), 29 (Testing), 31 (Developer Experience).
+- DEVELOPMENT_MATRIX.md filas 10 / 12 / 13 / 29 / 31.
+- DEVELOPMENT_GUIDELINES.md sección `#### ORM Metadata-Guided To-One Joins V1 (EntityQuery::join/leftJoin) — Hard rules desde DV-DB-021`.
+
+### Objetivo
+
+Abrir el primer puente ORM↔query-layer para joins relacionales útiles sin reescribir todavía la hidratación completa: usar metadata de asociaciones `to-one` para traducir joins SQL desde `EntityQuery`, habilitando filtros, ordenación y proyecciones sobre fields del target joined, pero manteniendo la entity hydration root segura y separada de la materialización automática de relaciones.
+
+### Entregables mínimos
+
+1. **API pública nueva en ORM Query surface**:
+   - `EntityQuery::join(string $association, ?string $alias = null): self`
+   - `EntityQuery::leftJoin(string $association, ?string $alias = null): self`
+2. **Traducción metadata-driven de joins**:
+   - soporte `ManyToOne` root
+   - soporte `OneToOne` owning root
+   - soporte `OneToOne` inverse root
+   - columnas `ON` derivadas de `EntityAssociationMetadata`
+3. **Querying/proyección joined**:
+   - `where('association.field', ...)`
+   - `orderBy('association.field')`
+   - `select('association.field')`
+   - `value()/pluck()` sobre fields joined
+4. **Hydration segura de entidades root**:
+   - cuando la query termina en `get()/first()`, la selección root debe aislarse (`t0.*` o equivalente) para evitar colisiones con columnas joined
+5. **Guardrails del corte**:
+   - no joins `to-many`
+   - no mezcla con `partial()` / `partialManaged()`
+   - no eager hydration automática de la asociación joined
+6. **Pruebas GREEN obligatorias**:
+   - feature SQLite cubriendo `ManyToOne` joined, `OneToOne` inverse joined, proyección joined, filtro root por field joined y rechazo de join `to-many`
+   - regresión ORM completa en verde
+
+### Pruebas mínimas
+
+1. Feature `DatabaseOrmFeatureTest::test_entity_query_can_join_to_one_associations_via_metadata_for_filters_and_projections` 8 assertions:
+   - `ManyToOne` joined por metadata
+   - `OneToOne` inverse joined por metadata
+   - `rows()` y `value()` sobre fields joined
+   - filtro root por field del target joined
+   - rechazo explícito de join `to-many`
+2. Regresión ORM completa GREEN:
+   - `DVDB014LifecycleCascadeOrphanTest`
+   - `DVDB015ExtendedRelationshipsTest`
+   - `DatabaseOrmFeatureTest`
+   - total: 32 tests / 560 assertions
+3. Regresión query layer GREEN:
+   - `DatabaseQueryCompilerTest`
+   - `DatabaseQueryBuilderExecutionTest`
+   - total: 5 tests / 25 assertions
+
+### Criterio de salida
+
+El consumer del ORM ya debe poder expresar consultas relacionales `to-one` útiles sin bajar a SQL manual, pero el sistema debe seguir siendo honesto: join para querying/proyección, `with(...)` para preload post-root y nada de eager hydration automática del target joined hasta una fase posterior.
+
+### Resultado del corte DV-DB-021
+
+1. **Joins ORM metadata-guided V1 operativos** sobre asociaciones root `to-one`.
+2. **Paths `association.field` disponibles** en `where/orderBy/select/value/pluck`.
+3. **Entity hydration root protegida** mediante aliasing root-safe.
+4. **Cobertura verde**: nueva feature 8 assertions + regresión ORM 32 tests / 560 assertions + regresión query layer 5 tests / 25 assertions.
+5. **Documentación DEVELOPMENT actualizada**: DEVELOPMENT_VERSIONS registra DV-DB-021, DEVELOPMENT_MATRIX actualiza filas 10/12/13/29/31, y DEVELOPMENT_GUIDELINES añade reglas duras para joins ORM guiados por metadata.
+
+## Fase 21 - ORM: Joined To-One Eager Hydration V1 (`get()/first()` sobre joins ORM)
+
+### Documentos fuente principales
+
+- Bloques 10 (ORM), 12 (Hydration), 13 (Relationships), 29 (Testing), 31 (Developer Experience).
+- DEVELOPMENT_MATRIX.md filas 10 / 12 / 13 / 29 / 31.
+- DEVELOPMENT_GUIDELINES.md sección `#### ORM Joined To-One Eager Hydration V1 (EntityQuery::get/first sobre joins ORM) — Hard rules desde DV-DB-022`.
+
+### Objetivo
+
+Dar el siguiente paso natural después del querying/proyección joined: cuando `EntityQuery` ya usa `join()` o `leftJoin()` sobre una asociación root `to-one`, `get()` y `first()` deben poder materializar esa asociación automáticamente en la misma pasada SQL, sin romper la hidratación segura del root ni el `IdentityMap`.
+
+### Entregables mínimos
+
+1. **Entity mode joined hydration**:
+   - `EntityQuery::get()` y `first()` detectan joined-association mode
+   - amplían el `SELECT` interno con columnas aliased del target joined
+   - hidratan la entidad root y luego la entidad target joined desde la misma fila
+2. **Compatibilidad con `IdentityMap`**:
+   - la entidad target joined debe pasar por hidratación managed normal
+   - reuso de instancia si el target ya estaba gestionado
+3. **Consistencia local de asociaciones**:
+   - asignar la asociación joined sobre el root
+   - enlazar back-reference sólo si el lado inverso también es `to-one`
+4. **`leftJoin()` limpio**:
+   - ausencia de fila target produce `null`
+5. **No alcance de esta fase**:
+   - no joins ORM `to-many`
+   - no hydration relacional transitiva
+   - no mezcla con `partial()` / `partialManaged()`
+6. **Pruebas GREEN obligatorias**:
+   - feature SQLite cubriendo `ManyToOne` joined + `OneToOne` joined + `leftJoin()` sin target
+   - regresión ORM completa en verde
+
+### Pruebas mínimas
+
+1. Feature `DatabaseOrmFeatureTest::test_entity_query_joined_to_one_associations_are_hydrated_on_entity_results` 11 assertions:
+   - `ManyToOne` joined e hidratado en `first()`
+   - reuse de `IdentityMap` para target joined
+   - `OneToOne` owning joined e hidratado
+   - back-reference `to-one`
+   - `leftJoin()` inverse con target ausente devolviendo `null`
+2. Regresión ORM completa GREEN:
+   - `DVDB014LifecycleCascadeOrphanTest`
+   - `DVDB015ExtendedRelationshipsTest`
+   - `DatabaseOrmFeatureTest`
+   - total: 33 tests / 571 assertions
+3. Regresión query layer GREEN:
+   - `DatabaseQueryCompilerTest`
+   - `DatabaseQueryBuilderExecutionTest`
+   - total: 5 tests / 25 assertions
+
+### Criterio de salida
+
+El consumer del ORM ya debe poder obtener entidades root con su asociación `to-one` joined ya materializada cuando la query lo pidió explícitamente. El sistema sigue sin prometer joins `to-many` ni graphs profundos, pero la brecha entre querying relacional y hydration real del caso `to-one` debe quedar cerrada.
+
+### Resultado del corte DV-DB-022
+
+1. **Joined eager hydration `to-one` operativa** en `get()/first()`.
+2. **La entidad root sigue protegida** con selección aislada `t0.*`.
+3. **La entidad target joined reutiliza `IdentityMap`** y puede enlazar back-reference `to-one` local.
+4. **Cobertura verde**: nueva feature 11 assertions + regresión ORM 33 tests / 571 assertions + regresión query layer 5 tests / 25 assertions.
+5. **Documentación DEVELOPMENT actualizada**: DEVELOPMENT_VERSIONS registra DV-DB-022, DEVELOPMENT_MATRIX actualiza filas 10/12/13/29/31, y DEVELOPMENT_GUIDELINES añade reglas duras para joined eager hydration `to-one`.
+
+## Fase 22 - ORM: Joined To-Many Hydration V1 (`EntityQuery::get` sobre joins ORM)
+
+### Documentos fuente principales
+
+- Bloques 10 (ORM), 12 (Hydration), 13 (Relationships), 29 (Testing), 31 (Developer Experience).
+- DEVELOPMENT_MATRIX.md filas 10 / 12 / 13 / 29 / 31.
+- DEVELOPMENT_GUIDELINES.md sección `#### ORM Joined To-Many Hydration V1 (EntityQuery::get sobre joins ORM) — Hard rules desde DV-DB-023`.
+
+### Objetivo
+
+Cerrar el siguiente escalón después de los joins `to-one`: permitir joins ORM `to-many` útiles sobre `EntityQuery` para querying/proyección y para materialización de colecciones en `get()`, garantizando deduplicación de roots, no duplicación de targets y snapshots coherentes para `UnitOfWork`.
+
+### Entregables mínimos
+
+1. **Joins ORM `to-many` permitidas**:
+   - `OneToMany`
+   - `ManyToMany`
+2. **Entity mode `get()` root-aware**:
+   - agrupar filas repetidas por identifier del root
+   - materializar la colección `to-many` sin duplicados
+   - mantener root/targets dentro del `IdentityMap`
+3. **Compatibilidad con `leftJoin()`**:
+   - colecciones vacías `[]` cuando no haya filas target
+4. **Guardrails explícitos**:
+   - `first()` rechazado con joins `to-many`
+   - `count()` cuenta roots y no filas multiplicadas por el join
+5. **No alcance de esta fase**:
+   - no paginación root-aware sobre joins `to-many`
+   - no hydration transitiva profunda
+   - no mezcla con `partial()` / `partialManaged()`
+6. **Pruebas GREEN obligatorias**:
+   - feature SQLite cubriendo `OneToMany`, `ManyToMany`, `leftJoin()` vacío, `count()` root-aware y rechazo de `first()`
+   - regresión ORM completa en verde
+
+### Pruebas mínimas
+
+1. Feature `DatabaseOrmFeatureTest::test_entity_query_can_join_to_many_associations_with_root_deduplication_and_collection_hydration` 16 assertions:
+   - proyección row-oriented sobre `OneToMany`
+   - `get()` con deduplicación de posts root
+   - back-reference `ManyToOne` local en `OneToMany`
+   - `leftJoin()` con colección vacía
+   - `count()` contando roots
+   - `ManyToMany` materializado en `get()`
+   - rechazo de `first()` con joins `to-many`
+2. Regresión ORM completa GREEN:
+   - `DVDB014LifecycleCascadeOrphanTest`
+   - `DVDB015ExtendedRelationshipsTest`
+   - `DatabaseOrmFeatureTest`
+   - total: 34 tests / 586 assertions
+3. Regresión query layer GREEN:
+   - `DatabaseQueryCompilerTest`
+   - `DatabaseQueryBuilderExecutionTest`
+   - total: 5 tests / 25 assertions
+
+### Criterio de salida
+
+El consumer del ORM ya debe poder expresar joins `to-many` desde `EntityQuery` sin bajar a SQL manual, obtener resultados de proyección row-oriented cuando lo necesite y, en `get()`, recibir entidades root deduplicadas con sus colecciones materializadas. Este corte sigue sin prometer paginación segura por root ni `first()` consistente sobre joins de colección.
+
+### Resultado del corte DV-DB-023
+
+1. **Joins ORM `to-many` operativas** para `OneToMany` y `ManyToMany`.
+2. **`get()` deduplica roots y materializa colecciones** desde la misma query SQL.
+3. **`count()` cuenta roots** cuando la query trae joins `to-many`.
+4. **`first()` queda bloqueado** para joins `to-many` por seguridad semántica.
+5. **Cobertura verde**: nueva feature 16 assertions + regresión ORM 34 tests / 586 assertions + regresión query layer 5 tests / 25 assertions.
+6. **Documentación DEVELOPMENT actualizada**: DEVELOPMENT_VERSIONS registra DV-DB-023, DEVELOPMENT_MATRIX actualiza filas 10/12/13/29/31, y DEVELOPMENT_GUIDELINES añade reglas duras para joined hydration `to-many`.
+
 ## Roadmap resumido
 
 1. Fase 1: Bootstrap, Config y Runtime Scope
@@ -1349,6 +1547,9 @@ El consumer del query layer ya debe poder expresar joins relacionales simples si
 17. Fase 17: ORM Partial Entity Hydration V1 (DV-DB-018: `EntityQuery::partial(...)->getPartial()/firstPartial()`, entidades parciales detached, auto-inclusión de PK, embedded parcial, guardrails en persist/remove, upgrade vía `refresh()`, Feature 23 assertions + regresión ORM 30/525 GREEN)
 18. Fase 18: ORM Managed Partial Entity Hydration V1 (DV-DB-019: `EntityQuery::partialManaged(...)->getPartialManaged()/firstPartialManaged()`, snapshots parciales en UnitOfWork, dirty-check/update limitados al subset loaded, bloqueo de remove, upgrade vía `find()`/`refresh()`, Feature 27 assertions + regresión ORM 31/552 GREEN)
 19. Fase 19: Query Layer Declarative Joins V1 (DV-DB-020: `SelectQueryBuilder::as()/join()/leftJoin()`, aliases en `TableReference`/`TableNode`, `Join`/`JoinNode`, compilación `FROM ... AS ...` + `JOIN` + `column AS alias`, unitaria 2 assertions + feature SQLite 6 assertions + regresión query layer 5/25 GREEN)
+20. Fase 20: ORM Metadata-Guided To-One Joins V1 (DV-DB-021: `EntityQuery::join()/leftJoin()`, paths `association.field` en `where/orderBy/select/value/pluck`, root aliasing seguro `t0.*`, rechazo de joins `to-many`, feature 8 assertions + regresión ORM 32/560 GREEN + query layer 5/25 GREEN)
+21. Fase 21: ORM Joined To-One Eager Hydration V1 (DV-DB-022: `get()/first()` materializan la asociación `to-one` joined desde la misma fila SQL, root aliasing seguro `t0.*`, reuse de `IdentityMap`, `leftJoin()` -> `null`, feature 11 assertions + regresión ORM 33/571 GREEN + query layer 5/25 GREEN)
+22. Fase 22: ORM Joined To-Many Hydration V1 (DV-DB-023: `EntityQuery::join()/leftJoin()` ya cubre `OneToMany` y `ManyToMany`, `get()` deduplica roots y materializa colecciones, `count()` cuenta roots, `first()` se rechaza por truncación semántica, feature 16 assertions + regresión ORM 34/586 GREEN + query layer 5/25 GREEN)
 
 ## Regla de control ejecutivo
 

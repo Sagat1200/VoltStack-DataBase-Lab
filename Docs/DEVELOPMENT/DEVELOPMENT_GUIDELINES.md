@@ -422,6 +422,66 @@ Toda implementación o extensión sobre joins declarativos del query layer **DEB
   - feature SQLite que ejecute joins reales y valide resultados,
   - y verificación explícita del SQL compilado con bindings.
 
+#### ORM Metadata-Guided To-One Joins V1 (`EntityQuery::join/leftJoin`) — Hard rules desde DV-DB-021
+
+Toda implementación o extensión sobre joins ORM guiados por metadata **DEBE** respetar:
+
+- **Alcance V1 explícito: root associations `to-one` solamente**: `EntityQuery::join()` y `leftJoin()` cubren `ManyToOne` y `OneToOne` root-level. No cubren `OneToMany`, `ManyToMany`, joins encadenados sobre asociaciones de asociaciones, ni colecciones parciales.
+- **Metadata primero, SQL después**: la condición `ON` debe derivarse de `EntityAssociationMetadata` (`sourceColumn`, `targetColumn`, owning/inverse) y no de strings duplicados a mano en el call-site ORM.
+- **Joined querying, no eager hydration automática**: este corte habilita `where/orderBy/select/value/pluck` sobre `association.field`, pero no obliga a materializar la entidad target joined en la propiedad PHP ni reemplaza `with(...)`.
+- **Entity hydration root debe seguir siendo segura**: cuando una query ORM con joins termina en `get()/first()`, la selección root debe evitar colisiones de columnas (`t0.*` o equivalente). No se debe hidratar accidentalmente la entidad root con columnas del target joined.
+- **Projection mode sí puede leer fields joined**: `select('post.title')`, `value('profile.bio')`, etc. deben soportarse sólo si la asociación fue joined explícitamente.
+- **No mezclar joins ORM con partial modes en V1**: `partial()` y `partialManaged()` no se combinan con joined-association mode hasta que exista un hydration plan relacional claro para ese caso.
+- **Errores directos antes que ambigüedad**: usar un path `association.field` sin haber hecho `join('association')` o `leftJoin('association')` debe fallar con un mensaje explícito.
+- **Joins to-many deben rechazarse**: si la asociación es `to-many`, la API debe fallar claramente; este corte no autoriza duplicación de roots ni hydration/aggregation implícita de colecciones.
+- **Compatibilidad con `with(...)`**: una query puede usar joins ORM para filtrar/proyectar y luego `with(...)` para precargar asociaciones, pero cada mecanismo conserva su responsabilidad: join para SQL, `with(...)` para post-root preload.
+- **Prueba mínima obligatoria**: toda ampliación de este bloque debe cubrir feature tests sobre SQLite para:
+  - `ManyToOne` joined por metadata,
+  - `OneToOne` inverse joined por metadata,
+  - proyección joined (`rows()/value()/pluck()`),
+  - filtro root por field del target joined,
+  - y rechazo explícito de joins `to-many`.
+
+#### ORM Joined To-One Eager Hydration V1 (`EntityQuery::get/first` sobre joins ORM) — Hard rules desde DV-DB-022
+
+Toda implementación o extensión sobre eager hydration de asociaciones `to-one` usando joins ORM **DEBE** respetar:
+
+- **Sólo activa en entity mode**: esta hidratación automática aplica a `get()` / `first()` cuando la query ya declaró `join(...)` o `leftJoin(...)`. No cambia el contrato de `rows()/firstRow()/value()/pluck()`.
+- **Root entity protegida siempre**: la selección SQL del root debe mantenerse aislada (`t0.*` o equivalente). Columnas del target joined no pueden contaminar la hidratación de la entidad root.
+- **Target joined debe venir fully-hydratable dentro de su alcance V1**: si se decide materializar una asociación joined, deben seleccionarse columnas suficientes del target para construir una entidad coherente según su metadata actual (fields + embedded columns mapeadas del target).
+- **Respeto por `IdentityMap`**: la entidad joined debe hidratarse/reusarse mediante el mismo camino managed estándar. No se deben crear duplicados fuera del `IdentityMap`.
+- **Sin prometer grafos arbitrarios**: este corte hidrata la asociación joined explícita `to-one` del root. No hidrata transitivamente asociaciones del target ni abre joins encadenados profundos.
+- **`leftJoin()` debe poder producir `null` limpio**: si no existe fila target, la propiedad de asociación debe quedar en `null` sin estados intermedios raros.
+- **Back-reference sólo cuando sea `to-one` y obvia**: si la metadata inversa existe y también es `to-one`, puede enlazarse sobre la misma instancia para mantener consistencia local. No se deben fabricar colecciones inverse-side en este corte.
+- **Compatibilidad con `with(...)`**: asociaciones ya materializadas por join no deben forzar una segunda carga redundante si pueden evitarse; `with(...)` sigue reservado para lo no cubierto por la join actual.
+- **Sin mezcla con partial modes**: `partial()` y `partialManaged()` continúan fuera de alcance cuando la query ORM usa joined eager hydration.
+- **Prueba mínima obligatoria**: toda ampliación de este bloque debe cubrir feature tests sobre SQLite para:
+  - `ManyToOne` joined e hidratado en `get()/first()`,
+  - `OneToOne` owning o inverse joined e hidratado,
+  - `leftJoin()` con target ausente devolviendo `null`,
+  - y verificación de que la instancia joined reutiliza `IdentityMap`.
+
+#### ORM Joined To-Many Hydration V1 (`EntityQuery::get` sobre joins ORM) — Hard rules desde DV-DB-023
+
+Toda implementación o extensión sobre joins ORM `to-many` **DEBE** respetar:
+
+- **Alcance V1 explícito: `get()` sí, `first()` no**: las joins `to-many` pueden soportar querying, proyección y materialización de colecciones en `get()`, pero `first()` debe rechazar este modo mientras el `LIMIT 1` siga truncando filas del join.
+- **Deduplicación de roots obligatoria**: una query joined `to-many` no puede devolver la misma entidad root repetida por cada fila del target. La salida de `get()` debe colapsar filas repetidas al mismo root managed.
+- **Colecciones sin duplicados**: si varias filas representan el mismo target para la misma colección, el array materializado no puede repetir la misma instancia.
+- **`IdentityMap` manda también en `to-many`**: tanto roots como targets joined deben pasar por la hidratación managed estándar y reutilizar instancias ya gestionadas.
+- **Inicialización coherente en joins externas**: `leftJoin()` sin filas target debe dejar la colección como `[]`, no `null`, ni propiedades sin inicializar.
+- **Back-reference sólo cuando el reverso sea `to-one`**: para `OneToMany`, enlazar el `ManyToOne` del target al root es correcto; para `ManyToMany`, este corte no obliga a poblar automáticamente la colección inversa.
+- **Snapshots de colección deben resincronizarse**: después de materializar una colección `to-many` vía join, el runtime debe actualizar el snapshot usado por `UnitOfWork` para evitar diffs fantasma en el próximo `flush()`.
+- **`count()` debe contar roots, no filas**: si la query ORM incluye joins `to-many`, `count()` no puede reflejar multiplicación por cardinalidad del join.
+- **Projection mode sigue siendo row-oriented**: `rows()/pluck()/value()` sobre joins `to-many` pueden devolver repetición de roots porque describen filas SQL, no entidades agrupadas.
+- **Este corte no resuelve paginación segura por root**: `limit/offset` sobre joins `to-many` siguen siendo semánticamente delicados. No se debe documentar esto como resuelto hasta que exista una estrategia root-aware.
+- **Prueba mínima obligatoria**: toda ampliación de este bloque debe cubrir feature tests sobre SQLite para:
+  - `OneToMany` joined con deduplicación de roots,
+  - `ManyToMany` joined con colección materializada,
+  - `leftJoin()` sin targets devolviendo `[]`,
+  - `count()` contando roots,
+  - y rechazo explícito de `first()` con joins `to-many`.
+
 ### Security, Telemetry, CLI y Plugins
 
 Todo trabajo sobre `216-340` debe respetar:
