@@ -1526,6 +1526,499 @@ El consumer del ORM ya debe poder expresar joins `to-many` desde `EntityQuery` s
 5. **Cobertura verde**: nueva feature 16 assertions + regresión ORM 34 tests / 586 assertions + regresión query layer 5 tests / 25 assertions.
 6. **Documentación DEVELOPMENT actualizada**: DEVELOPMENT_VERSIONS registra DV-DB-023, DEVELOPMENT_MATRIX actualiza filas 10/12/13/29/31, y DEVELOPMENT_GUIDELINES añade reglas duras para joined hydration `to-many`.
 
+## Fase 23 - ORM: Joined To-Many Root-Safe Windowing V1 (`limit/offset/first` sobre joins ORM)
+
+### Documentos fuente principales
+
+- Bloques 10 (ORM), 12 (Hydration), 13 (Relationships), 29 (Testing), 31 (Developer Experience).
+- DEVELOPMENT_MATRIX.md filas 10 / 12 / 13 / 29 / 31.
+- DEVELOPMENT_GUIDELINES.md sección `#### ORM Joined To-Many Root-Safe Windowing V1 (limit/offset/first sobre joins ORM) — Hard rules desde DV-DB-024`.
+
+### Objetivo
+
+Cerrar la semántica visible de windowing sobre joins ORM `to-many`: `limit()`, `offset()` y `first()` deben operar por root y no por fila SQL joined, preservando colecciones completas para cada entidad devuelta aunque la implementación V1 todavía priorice correctitud sobre eficiencia SQL.
+
+### Entregables mínimos
+
+1. **Windowing root-safe en entity mode**:
+   - `get()` aplica `limit/offset` después del agrupamiento por root cuando hay joins `to-many`
+   - `first()` devuelve el primer root de la ventana, no la primera fila SQL
+2. **Builder support mínimo para este corte**:
+   - `SelectQueryBuilder::withoutLimitOffset()` para reconstruir el query sin truncar filas joined
+3. **Colecciones completas para roots visibles**:
+   - si una entidad root entra en la ventana, su colección joined debe materializarse completa dentro del scope del query
+4. **Conteo consistente**:
+   - `count()` ignora la ventana configurada y sigue contando roots
+5. **No alcance de esta fase**:
+   - no paginación SQL-eficiente por subquery/root-id
+   - no total pages / cursor API
+   - no windowing root-safe en projection mode
+6. **Pruebas GREEN obligatorias**:
+   - feature SQLite cubriendo `limit()` root-safe, `offset()+first()` root-safe y `count()` total consistente
+   - regresión ORM completa en verde
+
+### Pruebas mínimas
+
+1. Feature `DatabaseOrmFeatureTest::test_entity_query_can_join_to_many_associations_with_root_deduplication_collection_hydration_and_root_safe_windowing` 24 assertions:
+   - `limit()` root-safe sobre `OneToMany`
+   - `offset()+first()` root-safe sobre `OneToMany`
+   - `limit()+offset()+first()` root-safe sobre `ManyToMany`
+   - colección completa preservada para roots visibles
+   - `count()` total consistente con ventana presente
+2. Regresión ORM completa GREEN:
+   - `DVDB014LifecycleCascadeOrphanTest`
+   - `DVDB015ExtendedRelationshipsTest`
+   - `DatabaseOrmFeatureTest`
+   - total: 34 tests / 594 assertions
+3. Regresión query layer GREEN:
+   - `DatabaseQueryCompilerTest`
+   - `DatabaseQueryBuilderExecutionTest`
+   - total: 5 tests / 25 assertions
+
+### Criterio de salida
+
+El consumer del ORM ya debe poder usar joins `to-many` con `limit()/offset()/first()` sin caer en colecciones truncadas por fila SQL. La estrategia V1 puede ser in-memory/root-aware, siempre que la semántica observable sea correcta y el gap de optimización quede documentado.
+
+### Resultado del corte DV-DB-024
+
+1. **`limit()/offset()/first()` root-safe** sobre joins ORM `to-many`.
+2. **Colecciones completas preservadas** para los roots visibles de la ventana.
+3. **`count()` sigue contando roots totales** aun con ventana presente.
+4. **Cobertura verde**: nueva feature 24 assertions + regresión ORM 34 tests / 594 assertions + regresión query layer 5 tests / 25 assertions.
+5. **Documentación DEVELOPMENT actualizada**: DEVELOPMENT_VERSIONS registra DV-DB-024, DEVELOPMENT_MATRIX actualiza filas 10/12/13/29/31, y DEVELOPMENT_GUIDELINES añade reglas duras para windowing root-safe sobre joins `to-many`.
+
+## Fase 24 - ORM: Joined To-Many Root-Id Windowing V1 (ventana SQL por roots antes de hidratar)
+
+### Documentos fuente principales
+
+- Bloques 10 (ORM), 12 (Hydration), 13 (Relationships), 29 (Testing), 31 (Developer Experience).
+- DEVELOPMENT_MATRIX.md filas 10 / 12 / 13 / 29 / 31.
+- DEVELOPMENT_GUIDELINES.md secciones:
+  - `#### ORM Joined To-Many Root-Safe Windowing V1 (limit/offset/first sobre joins ORM) — Hard rules desde DV-DB-024`
+  - `#### ORM Joined To-Many Root-Id Windowing V1 (ventana SQL por identifiers antes de hidratar) — Hard rules desde DV-DB-025`
+
+### Objetivo
+
+Conservar la semántica root-safe ya cerrada en `DV-DB-024`, pero reducir el costo observable del caso windowed sobre joins ORM `to-many`: primero se resuelve en SQL el conjunto ordenado de identifiers root de la ventana y después sólo se hidratan las filas joined de esos roots, preservando colecciones completas y el orden final de la ventana.
+
+### Entregables mínimos
+
+1. **Resolución SQL de la ventana root**:
+   - `EntityQuery` obtiene primero los identifiers root visibles mediante una query SQL dedicada
+   - esa query respeta `orderBy()`, `limit()` y `offset()` del query joined original
+2. **Hidratación acotada al subconjunto elegido**:
+   - la segunda query elimina `LIMIT/OFFSET` row-based
+   - pero restringe la carga joined al conjunto de identifiers root seleccionado
+3. **Orden final estable**:
+   - la colección de entidades devuelta respeta la secuencia de identifiers producida por la ventana root
+4. **Semántica preservada**:
+   - colecciones completas para cada root visible
+   - `count()` sigue expresando total roots
+   - `first()` sigue devolviendo el primer root completo de la ventana
+5. **No alcance de esta fase**:
+   - no cursor API ni total pages
+   - no windowing root-safe en projection mode
+   - no planner SQL multi-driver avanzado para aggregates/grouping complejos
+6. **Pruebas GREEN obligatorias**:
+   - feature SQLite cubriendo ventana root-safe combinada con `orderBy()` sobre field joined `to-many`
+   - regresión ORM completa en verde
+
+### Pruebas mínimas
+
+1. Feature `DatabaseOrmFeatureTest::test_entity_query_can_join_to_many_associations_with_root_deduplication_collection_hydration_and_root_safe_windowing` 30 assertions:
+   - `limit()` root-safe sobre `OneToMany`
+   - `offset()+first()` root-safe sobre `OneToMany`
+   - `limit()+offset()+first()` root-safe sobre `ManyToMany`
+   - `limit()` y `offset()+first()` combinados con `orderBy()` sobre `comments.body`
+   - colección completa preservada para el root visible
+   - `count()` total consistente con ventana presente
+2. Regresión ORM completa GREEN:
+   - `DVDB014LifecycleCascadeOrphanTest`
+   - `DVDB015ExtendedRelationshipsTest`
+   - `DatabaseOrmFeatureTest`
+   - total: 34 tests / 600 assertions
+3. Regresión query layer GREEN:
+   - `DatabaseQueryCompilerTest`
+   - `DatabaseQueryBuilderExecutionTest`
+   - total: 5 tests / 25 assertions
+
+### Criterio de salida
+
+El consumer del ORM sigue viendo una ventana root-safe correcta, pero el runtime ya no necesita rehidratar todos los roots joined para luego recortar en memoria cuando existe `limit()/offset()/first()`. El paso de ventana se resuelve primero como identifiers root y sólo después se hidratan las colecciones completas del subconjunto visible.
+
+### Resultado del corte DV-DB-025
+
+1. **Windowing root-id-driven**: la ventana joined `to-many` se resuelve primero en SQL como conjunto ordenado de identifiers root.
+2. **Hidratación acotada**: la carga completa de filas joined se restringe a los roots visibles en la ventana.
+3. **Orden final preservado**: el resultado final respeta la secuencia de identifiers root seleccionada por la ventana.
+4. **Cobertura verde**: feature ampliada a 30 assertions + regresión ORM 34 tests / 600 assertions + regresión query layer 5 tests / 25 assertions.
+5. **Documentación DEVELOPMENT actualizada**: DEVELOPMENT_VERSIONS registra DV-DB-025, DEVELOPMENT_MATRIX actualiza filas 10/12/13/29/31, y DEVELOPMENT_GUIDELINES añade reglas duras para windowing root-id-driven sobre joins `to-many`.
+
+## Fase 25 - ORM: Relational Partial Hydration To-One V1 (`partial/partialManaged` + `join/leftJoin`)
+
+### Documentos fuente principales
+
+- Bloques 10 (ORM), 12 (Hydration), 13 (Relationships), 29 (Testing), 31 (Developer Experience).
+- DEVELOPMENT_MATRIX.md filas 10 / 12 / 13 / 29 / 31.
+- DEVELOPMENT_GUIDELINES.md sección `#### ORM Relational Partial Hydration To-One V1 (partial/partialManaged + join/leftJoin) — Hard rules desde DV-DB-026`.
+
+### Objetivo
+
+Abrir el primer corte útil de hidratación relacional parcial: permitir que `partial(...)` y `partialManaged(...)` convivan con `join()/leftJoin()` sobre asociaciones `to-one`, manteniendo selección explícita por fields, `IdentityMap`/`UnitOfWork` coherentes en modo managed y sin abrir todavía joins `to-many`, `with(...)` ni grafos parciales profundos.
+
+### Entregables mínimos
+
+1. **Partial relacional sobre joins `to-one`**:
+   - `partial(...)` puede seleccionar fields del root y del target joined (`post.title`, `profile.bio`)
+   - `partialManaged(...)` soporta el mismo shape
+2. **Identifier automático del target parcial**:
+   - si se pide al menos un field del target joined, el identifier del target se incluye automáticamente
+3. **Semántica correcta de `leftJoin()`**:
+   - target ausente => asociación `null`
+4. **Managed partial coherente**:
+   - root y target joined pueden quedar como managed-partial y flushear sólo fields cargados
+5. **No alcance de esta fase**:
+   - no joins `to-many` en partial mode
+   - no `with(...)` combinado con partial relacional
+   - no asociaciones anidadas profundas (`post.author.name`)
+6. **Pruebas GREEN obligatorias**:
+   - feature SQLite cubriendo detached partial joined `to-one`, `leftJoin()` `to-one` nulo, managed partial joined con flush del target y rechazo de join `to-many`
+   - regresión ORM completa en verde
+
+### Pruebas mínimas
+
+1. Feature `DatabaseOrmFeatureTest::test_entity_query_partial_relational_hydration_supports_joined_to_one_associations` 30 assertions:
+   - detached partial `ManyToOne` con target parcial
+   - `leftJoin()` inverse `OneToOne` con target ausente devolviendo `null`
+   - managed partial `ManyToOne` con flush de field cargado del target
+   - upgrade del target partial-managed vía `find()`
+   - rechazo explícito de joins `to-many` en partial mode
+2. Regresión ORM completa GREEN:
+   - `DVDB014LifecycleCascadeOrphanTest`
+   - `DVDB015ExtendedRelationshipsTest`
+   - `DatabaseOrmFeatureTest`
+   - total: 35 tests / 630 assertions
+3. Regresión query layer GREEN:
+   - `DatabaseQueryCompilerTest`
+   - `DatabaseQueryBuilderExecutionTest`
+   - total: 5 tests / 25 assertions
+
+### Criterio de salida
+
+El consumer del ORM ya puede pedir entidades parciales root acompañadas de targets `to-one` también parciales, tanto en modo detached como managed, sin fingir grafos completos ni romper las garantías existentes de `refresh()`, `find()` y dirty-check limitado a fields cargados.
+
+### Resultado del corte DV-DB-026
+
+1. **Partial relacional V1 sobre joins `to-one`** en `partial(...)` y `partialManaged(...)`.
+2. **`leftJoin()` nulo correcto**: target ausente devuelve `null`.
+3. **Managed partial coherente para root y target**: el target joined puede flushear fields cargados y promoverse vía `find()`.
+4. **Guardrail explícito**: joins `to-many` siguen rechazados en partial mode.
+5. **Cobertura verde**: nueva feature 30 assertions + regresión ORM 35 tests / 630 assertions + regresión query layer 5 tests / 25 assertions.
+6. **Documentación DEVELOPMENT actualizada**: DEVELOPMENT_VERSIONS registra DV-DB-026, DEVELOPMENT_MATRIX actualiza filas 10/12/13/29/31, y DEVELOPMENT_GUIDELINES añade reglas duras para partial hydration relacional `to-one`.
+
+## Fase 26 - ORM: Declarative Fetch Strategies V1 (`fetch: 'lazy'|'eager'`)
+
+### Documentos fuente principales
+
+- Bloques 10 (ORM), 12 (Hydration), 13 (Relationships), 29 (Testing), 31 (Developer Experience).
+- DEVELOPMENT_MATRIX.md filas 10 / 12 / 13 / 29 / 31.
+- DEVELOPMENT_GUIDELINES.md sección `#### ORM Declarative Fetch Strategies V1 (fetch: 'lazy'|'eager') — Hard rules desde DV-DB-027`.
+
+### Objetivo
+
+Abrir el primer corte útil de fetch strategies declarativas sin tocar proxies ni lazy transparente: permitir que las asociaciones declaren `fetch: 'eager'` en metadata y que el runtime respete esa intención al resolver entidades root por `find()`, `refresh()`, `get()` y `first()`, reutilizando la infraestructura ya existente de `preloadAssociations()`.
+
+### Entregables mínimos
+
+1. **Fetch strategy declarativa en metadata**:
+   - atributos de asociación aceptan `fetch: 'lazy'|'eager'`
+   - `EntityAssociationMetadata` expone la estrategia normalizada
+2. **Autoload de asociaciones `eager` en roots**:
+   - `EntityManager::find()` y `refresh()` aplican autoload declarativo de asociaciones `eager`
+   - `EntityQuery::get()` y `first()` hacen lo mismo para roots hidratados por query
+3. **No duplicar trabajo ya joined**:
+   - si una asociación `eager` ya fue resuelta por `join()/leftJoin()`, no se vuelve a consultar
+4. **No alcance de esta fase**:
+   - no proxies lazy transparentes
+   - no fetch graphs profundos ni recursión multi-hop automática
+   - no planners compilados de N+1
+5. **Pruebas GREEN obligatorias**:
+   - feature SQLite cubriendo eager `ManyToOne` y eager `OneToMany`
+   - unit test de metadata verificando `fetch` explícito y default `lazy`
+   - regresión ORM completa en verde
+
+### Pruebas mínimas
+
+1. Feature `DatabaseOrmFeatureTest::test_entity_manager_and_entity_query_honor_declarative_eager_fetch_strategies` 14 assertions:
+   - `find()` sobre root `ManyToOne` marcada `eager`
+   - `find()` sobre root `OneToMany` marcada `eager`
+   - `get()` sobre roots `ManyToOne` eager
+   - `first()` sobre root con colección eager
+2. Unit `DVDB015ExtendedRelationshipsTest` 35 assertions totales:
+   - fetch explícito `eager`
+   - default `lazy`
+   - helper `eagerAssociationNames()`
+3. Regresión ORM completa GREEN:
+   - `DVDB014LifecycleCascadeOrphanTest`
+   - `DVDB015ExtendedRelationshipsTest`
+   - `DatabaseOrmFeatureTest`
+   - total: 37 tests / 649 assertions
+4. Regresión query layer GREEN:
+   - `DatabaseQueryCompilerTest`
+   - `DatabaseQueryBuilderExecutionTest`
+   - total: 5 tests / 25 assertions
+
+### Criterio de salida
+
+El ORM ya permite declarar intención de carga `eager` en asociaciones y la respeta en los entrypoints root más usados, sin abrir todavía proxies lazy, estrategias profundas ni planners más sofisticados. El comportamiento sigue siendo explícito y reutiliza el pipeline correcto que ya existía para precarga por lotes.
+
+### Resultado del corte DV-DB-027
+
+1. **Metadata con `fetch: 'lazy'|'eager'`** en asociaciones ORM.
+2. **Autoload declarativo root-aware** en `find()/refresh()/get()/first()`.
+3. **Reutilización del runtime existente**: `preloadAssociations()` sigue siendo el núcleo del comportamiento eager.
+4. **Sin recarga duplicada de joins ya resueltos**.
+5. **Cobertura verde**: nueva feature 14 assertions + regresión ORM 37 tests / 649 assertions + regresión query layer 5 tests / 25 assertions.
+6. **Documentación DEVELOPMENT actualizada**: DEVELOPMENT_VERSIONS registra DV-DB-027, DEVELOPMENT_MATRIX actualiza filas 10/12/13/29/31, y DEVELOPMENT_GUIDELINES añade reglas duras para fetch strategies declarativas V1.
+
+## Fase 27 - ORM: Relational Partial Hydration To-Many V1 (`partial(...)->getPartial()/firstPartial()`)
+
+### Documentos fuente principales
+
+- Bloques 10 (ORM), 12 (Hydration), 13 (Relationships), 29 (Testing), 31 (Developer Experience).
+- DEVELOPMENT_MATRIX.md filas 10 / 12 / 13 / 29 / 31.
+- DEVELOPMENT_GUIDELINES.md sección `#### ORM Relational Partial Hydration To-Many V1 (partial(...)->getPartial()/firstPartial()) — Hard rules desde DV-DB-028`.
+
+### Objetivo
+
+Abrir el siguiente corte útil de hydration/fetch strategies sobre joins ORM `to-many`, pero sin mezclar todavía snapshots, dirty-check de colecciones ni `partialManaged()`: permitir `partial(...)->getPartial()/firstPartial()` con deduplicación de roots, colecciones parciales detached y semántica root-safe coherente con el trabajo previo de joins `to-many`.
+
+### Entregables mínimos
+
+1. **Partial relacional detached sobre joins `to-many`**:
+   - `partial(...)->getPartial()` soporta `OneToMany` y `ManyToMany`
+   - los roots se deduplican y cada root materializa su colección parcial
+2. **Windowing root-safe también en partial mode**:
+   - `limit()/offset()/firstPartial()` sobre joins `to-many` operan por root
+3. **Semántica correcta de `leftJoin()`**:
+   - asociaciones `to-many` sin filas joined se materializan como `[]`
+4. **No alcance de esta fase**:
+   - no `partialManaged()` sobre joins `to-many`
+   - no snapshots ni flush de colecciones parciales detached
+   - no projection mode root-safe
+5. **Pruebas GREEN obligatorias**:
+   - feature SQLite cubriendo `OneToMany`, `ManyToMany`, `leftJoin()` vacío, windowing root-safe y rechazo de `partialManaged()` sobre joins `to-many`
+   - regresión ORM completa en verde
+
+### Pruebas mínimas
+
+1. Feature `DatabaseOrmFeatureTest::test_entity_query_partial_relational_hydration_supports_joined_to_many_associations_in_detached_mode` 24 assertions:
+   - `OneToMany` parcial detached con deduplicación de roots
+   - `leftJoin()` `to-many` con colección vacía
+   - `limit()` root-safe sobre join `to-many`
+   - `offset()+firstPartial()` root-safe
+   - `ManyToMany` parcial detached
+2. Guardrail complementario en `test_entity_query_partial_relational_hydration_supports_joined_to_one_associations`:
+   - `partialManaged()` con join `to-many` sigue rechazado explícitamente
+3. Regresión ORM completa GREEN:
+   - `DVDB014LifecycleCascadeOrphanTest`
+   - `DVDB015ExtendedRelationshipsTest`
+   - `DatabaseOrmFeatureTest`
+   - total: 38 tests / 673 assertions
+4. Regresión query layer GREEN:
+   - `DatabaseQueryCompilerTest`
+   - `DatabaseQueryBuilderExecutionTest`
+   - total: 5 tests / 25 assertions
+
+### Criterio de salida
+
+El ORM ya permite pedir roots parciales con colecciones parciales detached sobre joins `to-many`, manteniendo deduplicación de roots, windowing root-safe y semántica honesta de colecciones vacías. El corte sigue siendo explícito: no hay colecciones parciales managed, no hay flush de esos detached graphs y no se vende projection mode root-safe todavía.
+
+### Resultado del corte DV-DB-028
+
+1. **Partial relacional detached/root-safe sobre joins `to-many`** en `partial(...)->getPartial()/firstPartial()`.
+2. **Colecciones parciales por root** para `OneToMany` y `ManyToMany`.
+3. **`leftJoin()` vacío correcto**: asociaciones `to-many` sin filas quedan como `[]`.
+4. **Guardrail explícito**: `partialManaged()` sigue rechazando joins `to-many`.
+5. **Cobertura verde**: nueva feature 24 assertions + regresión ORM 38 tests / 673 assertions + regresión query layer 5 tests / 25 assertions.
+6. **Documentación DEVELOPMENT actualizada**: DEVELOPMENT_VERSIONS registra DV-DB-028, DEVELOPMENT_MATRIX actualiza filas 10/12/13/29/31, y DEVELOPMENT_GUIDELINES añade reglas duras para partial hydration relacional `to-many`.
+
+## Fase 28 - ORM: Eager Cascade Batch V1 (segundo salto `eager`)
+
+### Documentos fuente principales
+
+- Bloques 10 (ORM), 12 (Hydration), 13 (Relationships), 29 (Testing), 31 (Developer Experience).
+- DEVELOPMENT_MATRIX.md filas 10 / 12 / 13 / 29 / 31.
+- DEVELOPMENT_GUIDELINES.md sección `#### ORM Eager Cascade Batch V1 (segundo salto eager sin planners profundos) — Hard rules desde DV-DB-029`.
+
+### Objetivo
+
+Reducir el N+1 que todavía quedaba en el segundo salto de precarga eager: cuando una asociación root se resuelve en batch mediante `with(...)` o `fetch: 'eager'`, permitir que los targets recién cargados precarguen también sus asociaciones `eager` en una segunda ola batch, sin abrir fetch graphs profundos, proxies ni planners más sofisticados.
+
+### Entregables mínimos
+
+1. **Segunda ola eager controlada**:
+   - al precargar una asociación root, los targets recién resueltos pueden precargar sus asociaciones `eager`
+2. **Sin rebote inmediato**:
+   - se excluye la back-reference directa (`mappedBy` / `inversedBy`) para evitar ciclos triviales
+3. **Mismo pipeline batch**:
+   - la mejora reutiliza la infraestructura existente de `preloadAssociations()` / batch loaders
+4. **No alcance de esta fase**:
+   - no planners recursivos profundos
+   - no proxies lazy transparentes
+   - no fetch graphs arbitrarios
+5. **Pruebas GREEN obligatorias**:
+   - feature SQLite cubriendo root eager + colección eager + segundo target eager compartido
+   - regresión ORM completa en verde
+
+### Pruebas mínimas
+
+1. Feature `DatabaseOrmFeatureTest::test_entity_manager_and_entity_query_honor_declarative_eager_fetch_strategies` 20 assertions:
+   - `find()` sobre root con colección eager
+   - segundo salto `eager` sobre targets de esa colección
+   - identidad compartida del segundo target cuando varios elementos lo referencian
+   - `get()/first()` respetando la misma cascada
+2. Regresión ORM completa GREEN:
+   - `DVDB014LifecycleCascadeOrphanTest`
+   - `DVDB015ExtendedRelationshipsTest`
+   - `DatabaseOrmFeatureTest`
+   - total: 38 tests / 679 assertions
+3. Regresión query layer GREEN:
+   - `DatabaseQueryCompilerTest`
+   - `DatabaseQueryBuilderExecutionTest`
+   - total: 5 tests / 25 assertions
+
+### Criterio de salida
+
+El ORM ya evita parte del N+1 de segundo salto en escenarios eager comunes como `author -> books -> publisher`, manteniendo el runtime honesto y contenido: batch reutilizable, un salto adicional, sin proxies y sin grafo recursivo abierto.
+
+### Resultado del corte DV-DB-029
+
+1. **Eager cascade batch V1** sobre targets precargados.
+2. **Un segundo salto `eager` ya materializado** en `find()/get()/first()` y en precargas batch explícitas.
+3. **Exclusión de la back-reference inmediata** para evitar rebotes triviales.
+4. **Cobertura verde**: feature ampliada a 20 assertions + regresión ORM 38 tests / 679 assertions + regresión query layer 5 tests / 25 assertions.
+5. **Documentación DEVELOPMENT actualizada**: DEVELOPMENT_VERSIONS registra DV-DB-029, DEVELOPMENT_MATRIX actualiza filas 10/12/13/29/31, y DEVELOPMENT_GUIDELINES añade reglas duras para eager cascade batch V1.
+
+## Fase 29 - ORM: Relational Partial Hydration To-Many Managed V1
+
+### Documentos fuente principales
+
+- Bloques 10 (ORM), 12 (Hydration), 13 (Relationships), 29 (Testing), 31 (Developer Experience).
+- DEVELOPMENT_MATRIX.md filas 10 / 12 / 13 / 29 / 31.
+- DEVELOPMENT_GUIDELINES.md sección `#### ORM Relational Partial Hydration To-Many Managed V1 (partialManaged(...)->getPartialManaged()/firstPartialManaged()) — Hard rules desde DV-DB-030`.
+
+### Objetivo
+
+Abrir el siguiente corte útil sobre joins ORM `to-many`: permitir que `partialManaged(...)->getPartialManaged()/firstPartialManaged()` entregue roots y targets parciales pero managed, con windowing root-safe y flush de fields explícitamente cargados, manteniendo todavía fuera de alcance las mutaciones estructurales del membership de la colección.
+
+### Entregables mínimos
+
+1. **Managed partial sobre joins `to-many`**:
+   - `partialManaged(...)->getPartialManaged()` soporta `OneToMany` y `ManyToMany`
+   - roots y targets quedan en `IdentityMap` / `UnitOfWork` como managed partials
+2. **Windowing root-safe también en managed mode**:
+   - `limit()/offset()/firstPartialManaged()` operan por root
+3. **Colección vacía honesta**:
+   - `leftJoin()` `to-many` sin filas joined devuelve `[]`
+4. **Guardrail explícito de membership**:
+   - agregar o remover items de una colección partial-managed provoca error claro en `flush()`
+5. **Pruebas GREEN obligatorias**:
+   - feature SQLite cubriendo edición de field en root y targets `to-many`
+   - guardrail de membership mutation
+   - regresión ORM completa en verde
+
+### Pruebas mínimas
+
+1. Feature `DatabaseOrmFeatureTest::test_entity_query_partial_relational_hydration_supports_joined_to_many_associations_in_managed_mode` 29 assertions:
+   - `OneToMany` managed partial con edición de field en root y target
+   - `ManyToMany` managed partial con edición de field en target
+   - `leftJoin()` vacío como `[]`
+   - `offset()+firstPartialManaged()` root-safe
+   - rechazo explícito de membership mutation
+2. Regresión ORM completa GREEN:
+   - `DVDB014LifecycleCascadeOrphanTest`
+   - `DVDB015ExtendedRelationshipsTest`
+   - `DatabaseOrmFeatureTest`
+   - total: 39 tests / 707 assertions
+3. Regresión query layer GREEN:
+   - `DatabaseQueryCompilerTest`
+   - `DatabaseQueryBuilderExecutionTest`
+   - total: 5 tests / 25 assertions
+
+### Criterio de salida
+
+El ORM ya permite trabajar con grafos parciales `to-many` en modo managed para editar fields realmente cargados, manteniendo correctitud en identidad, root-safe windowing y `leftJoin()` vacío. El runtime sigue siendo honesto: la membresía de la colección partial-managed todavía no se puede mutar y falla explícitamente en `flush()`.
+
+### Resultado del corte DV-DB-030
+
+1. **Managed partial/root-safe sobre joins `to-many`** en `partialManaged(...)->getPartialManaged()/firstPartialManaged()`.
+2. **Roots y targets partial-managed** para `OneToMany` y `ManyToMany`.
+3. **Flush de fields cargados** en root y targets `to-many`.
+4. **Guardrail explícito de membership**: la mutación estructural de la colección falla en `flush()`.
+5. **Cobertura verde**: nueva feature 29 assertions + regresión ORM 39 tests / 707 assertions + regresión query layer 5 tests / 25 assertions.
+6. **Documentación DEVELOPMENT actualizada**: DEVELOPMENT_VERSIONS registra DV-DB-030, DEVELOPMENT_MATRIX actualiza filas 10/12/13/29/31, y DEVELOPMENT_GUIDELINES añade reglas duras para managed partial `to-many`.
+
+## Fase 30 - ORM Partial-Managed Collection Membership V1 (DV-DB-031)
+
+- DEVELOPMENT_VERSIONS.md registra `DV-DB-031`.
+- DEVELOPMENT_MATRIX.md actualiza filas `10 ORM`, `12 Hydration`, `13 Relationships`, `29 Testing` y `31 Developer Experience`.
+- DEVELOPMENT_GUIDELINES.md reemplaza las reglas duras de `managed partial to-many` por la variante V2 con membership estructural soportado cuando el runtime puede reconciliarlo.
+
+### Objetivo
+
+Abrir el siguiente corte mínimo posterior a `DV-DB-030`: habilitar mutación estructural real de membership en colecciones `partialManaged(...)` allí donde el runtime ya posee una ruta de sincronización correcta (`ManyToMany` owning-side y `OneToMany` con `orphanRemoval` o owning-side consistente), sin introducir proxies, planners profundos ni semánticas mágicas.
+
+### Entregables mínimos
+
+1. **`ManyToMany` owning-side partial-managed sincronizable**:
+   - `flushManyToManyMembershipChanges()` procesa también asociaciones partial-managed cargadas
+   - nuevas altas pueden entrar vía cascade persist antes del reconcile de la join-table
+2. **`OneToMany` partial-managed con soporte estructural honesto**:
+   - `collectOrphansForRemoval()` procesa colecciones partial-managed cargadas con `orphanRemoval`
+   - altas válidas sobre `OneToMany` exigen owning-side consistente
+3. **Guardrails explícitos sólo donde siguen siendo necesarios**:
+   - inverse `ManyToMany` partial-managed falla con error claro
+   - `OneToMany` sin owning-side consistente falla con error claro
+   - targets `ManyToMany` sin identifier persistente fallan con error claro al sincronizar
+4. **Snapshots coherentes tras flush**:
+   - las colecciones partial-managed mutadas refrescan snapshot para no arrastrar diffs fantasma al siguiente `flush()`
+5. **Pruebas GREEN obligatorias**:
+   - feature SQLite cubriendo add/remove estructural `ManyToMany` partial-managed
+   - feature SQLite cubriendo `OneToMany` partial-managed con `orphanRemoval` y alta válida
+   - regresión ORM y query layer en verde
+
+### Pruebas mínimas
+
+1. Feature `DatabaseOrmFeatureTest::test_entity_query_partial_relational_hydration_supports_joined_to_many_associations_in_managed_mode`:
+   - mantiene edición de fields cargados
+   - ahora cubre remove+add estructural en `ManyToMany` partial-managed
+2. Feature `DatabaseOrmFeatureTest::test_partial_managed_one_to_many_collections_support_structural_membership_when_runtime_can_sync_them`:
+   - cubre `orphanRemoval` sobre `OneToMany` partial-managed
+   - cubre alta válida sobre `OneToMany` partial-managed con owning-side consistente
+3. Regresión ORM completa GREEN:
+   - `DatabaseOrmFeatureTest`
+   - `DVDB014LifecycleCascadeOrphanTest`
+   - `DVDB015ExtendedRelationshipsTest`
+   - total: `40 tests / 718 assertions`
+4. Regresión query layer GREEN:
+   - `DatabaseQueryCompilerTest`
+   - `DatabaseQueryBuilderExecutionTest`
+   - total: `5 tests / 25 assertions`
+
+### Criterio de salida
+
+El ORM ya permite mutaciones estructurales reales en colecciones partial-managed cuando la relación tiene una ruta de sincronización bien definida en el runtime actual. El sistema sigue siendo honesto: inverse `ManyToMany`, `OneToMany` sin owning-side consistente, proxies transparentes y planners profundos continúan fuera de alcance.
+
+### Resultado del corte DV-DB-031
+
+1. **`ManyToMany` partial-managed owning-side sincronizable**: remove/add estructural y altas por cascade persist ya flushean contra la join-table.
+2. **`OneToMany` partial-managed con `orphanRemoval` operativo**: los removals estructurales ya pueden eliminar targets managed sin refresh completo del root.
+3. **Guardrails precisos**: el bloqueo blanket desaparece y queda reemplazado por errores explícitos sólo en mutaciones no reconciliables.
+4. **Snapshots refresh**: las colecciones partial-managed mutadas ya resincronizan snapshot después del flush.
+5. **Cobertura verde**: feature ORM 20 tests / 564 assertions, regresión ORM 40 tests / 718 assertions, regresión query layer 5 tests / 25 assertions.
+6. **Documentación DEVELOPMENT actualizada**: DEVELOPMENT_VERSIONS registra DV-DB-031, DEVELOPMENT_MATRIX actualiza filas 10/12/13/29/31 y DEVELOPMENT_GUIDELINES actualiza reglas duras para managed partial `to-many`.
+
 ## Roadmap resumido
 
 1. Fase 1: Bootstrap, Config y Runtime Scope
@@ -1550,6 +2043,14 @@ El consumer del ORM ya debe poder expresar joins `to-many` desde `EntityQuery` s
 20. Fase 20: ORM Metadata-Guided To-One Joins V1 (DV-DB-021: `EntityQuery::join()/leftJoin()`, paths `association.field` en `where/orderBy/select/value/pluck`, root aliasing seguro `t0.*`, rechazo de joins `to-many`, feature 8 assertions + regresión ORM 32/560 GREEN + query layer 5/25 GREEN)
 21. Fase 21: ORM Joined To-One Eager Hydration V1 (DV-DB-022: `get()/first()` materializan la asociación `to-one` joined desde la misma fila SQL, root aliasing seguro `t0.*`, reuse de `IdentityMap`, `leftJoin()` -> `null`, feature 11 assertions + regresión ORM 33/571 GREEN + query layer 5/25 GREEN)
 22. Fase 22: ORM Joined To-Many Hydration V1 (DV-DB-023: `EntityQuery::join()/leftJoin()` ya cubre `OneToMany` y `ManyToMany`, `get()` deduplica roots y materializa colecciones, `count()` cuenta roots, `first()` se rechaza por truncación semántica, feature 16 assertions + regresión ORM 34/586 GREEN + query layer 5/25 GREEN)
+23. Fase 23: ORM Joined To-Many Root-Safe Windowing V1 (DV-DB-024: `limit()/offset()/first()` ya operan por root sobre joins `to-many`, `SelectQueryBuilder::withoutLimitOffset()` habilita reagrupado correcto, `count()` sigue total roots, feature 24 assertions + regresión ORM 34/594 GREEN + query layer 5/25 GREEN)
+24. Fase 24: ORM Joined To-Many Root-Id Windowing V1 (DV-DB-025: `EntityQuery` resuelve primero la ventana SQL como identifiers root y luego sólo hidrata filas joined de esos roots, preservando orden final + colecciones completas, feature 30 assertions + regresión ORM 34/600 GREEN + query layer 5/25 GREEN)
+25. Fase 25: ORM Relational Partial Hydration To-One V1 (DV-DB-026: `partial(...)` y `partialManaged(...)` ya pueden combinarse con `join()/leftJoin()` sobre asociaciones `to-one`, hidratando fields explícitos del root y del target joined sin abrir todavía `to-many`, `with(...)` ni partial hydration relacional profunda, feature 30 assertions + regresión ORM 35/630 GREEN)
+26. Fase 26: ORM Declarative Fetch Strategies V1 (DV-DB-027: `fetch: 'lazy'|'eager'` ya existe en metadata de asociaciones y `find()/refresh()/get()/first()` precargan automáticamente asociaciones root marcadas `eager`, reutilizando `preloadAssociations()` sin abrir proxies lazy ni planes compilados todavía, feature 14 assertions + regresión ORM 37/649 GREEN)
+27. Fase 27: ORM Relational Partial Hydration To-Many V1 (DV-DB-028: `partial(...)->getPartial()/firstPartial()` ya soporta joins `to-many` con deduplicación de roots, colecciones parciales detached y semántica root-safe, manteniendo `partialManaged()` fuera de alcance para colecciones, feature 24 assertions + regresión ORM 38/673 GREEN)
+28. Fase 28: ORM Eager Cascade Batch V1 (DV-DB-029: cuando `preloadAssociations()` o el fetch declarativo `eager` cargan targets en batch, ya precargan un salto adicional de asociaciones `eager` sobre esos targets para recortar el N+1 de segundo salto sin abrir planners, proxies ni recursión profunda, feature 20 assertions + regresión ORM 38/679 GREEN)
+29. Fase 29: ORM Relational Partial Hydration To-Many Managed V1 (DV-DB-030: `partialManaged(...)->getPartialManaged()/firstPartialManaged()` ya soporta joins `to-many` con roots/targets managed parciales y windowing root-safe, pero bloquea explícitamente las mutaciones de membership de colección, feature 29 assertions + regresión ORM 39/707 GREEN)
+30. Fase 30: ORM Partial-Managed Collection Membership V1 (DV-DB-031: `partialManaged(...)->getPartialManaged()/firstPartialManaged()` ya soporta mutación estructural real de membership cuando la relación tiene una ruta de sincronización válida en el runtime actual, incluyendo `ManyToMany` owning-side y `OneToMany` con `orphanRemoval` u owning-side consistente, feature ORM 20/564 + regresión ORM 40/718 GREEN)
 
 ## Regla de control ejecutivo
 

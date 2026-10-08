@@ -465,7 +465,7 @@ Toda implementación o extensión sobre eager hydration de asociaciones `to-one`
 
 Toda implementación o extensión sobre joins ORM `to-many` **DEBE** respetar:
 
-- **Alcance V1 explícito: `get()` sí, `first()` no**: las joins `to-many` pueden soportar querying, proyección y materialización de colecciones en `get()`, pero `first()` debe rechazar este modo mientras el `LIMIT 1` siga truncando filas del join.
+- **Alcance V1 explícito base**: las joins `to-many` soportan querying, proyección y materialización de colecciones. La forma inicial de este bloque se consolidó alrededor de `get()`; el windowing root-safe (`limit()/offset()/first()`) queda normado por el corte siguiente.
 - **Deduplicación de roots obligatoria**: una query joined `to-many` no puede devolver la misma entidad root repetida por cada fila del target. La salida de `get()` debe colapsar filas repetidas al mismo root managed.
 - **Colecciones sin duplicados**: si varias filas representan el mismo target para la misma colección, el array materializado no puede repetir la misma instancia.
 - **`IdentityMap` manda también en `to-many`**: tanto roots como targets joined deben pasar por la hidratación managed estándar y reutilizar instancias ya gestionadas.
@@ -474,13 +474,136 @@ Toda implementación o extensión sobre joins ORM `to-many` **DEBE** respetar:
 - **Snapshots de colección deben resincronizarse**: después de materializar una colección `to-many` vía join, el runtime debe actualizar el snapshot usado por `UnitOfWork` para evitar diffs fantasma en el próximo `flush()`.
 - **`count()` debe contar roots, no filas**: si la query ORM incluye joins `to-many`, `count()` no puede reflejar multiplicación por cardinalidad del join.
 - **Projection mode sigue siendo row-oriented**: `rows()/pluck()/value()` sobre joins `to-many` pueden devolver repetición de roots porque describen filas SQL, no entidades agrupadas.
-- **Este corte no resuelve paginación segura por root**: `limit/offset` sobre joins `to-many` siguen siendo semánticamente delicados. No se debe documentar esto como resuelto hasta que exista una estrategia root-aware.
+- **Este corte por sí solo no cerraba windowing seguro**: la paginación/root-limiting sobre joins `to-many` requiere reglas adicionales para no truncar colecciones por fila SQL.
 - **Prueba mínima obligatoria**: toda ampliación de este bloque debe cubrir feature tests sobre SQLite para:
   - `OneToMany` joined con deduplicación de roots,
   - `ManyToMany` joined con colección materializada,
   - `leftJoin()` sin targets devolviendo `[]`,
-  - `count()` contando roots,
-  - y rechazo explícito de `first()` con joins `to-many`.
+  - y `count()` contando roots.
+
+#### ORM Joined To-Many Root-Safe Windowing V1 (`limit/offset/first` sobre joins ORM) — Hard rules desde DV-DB-024
+
+Toda implementación o extensión sobre windowing root-safe en joins ORM `to-many` **DEBE** respetar:
+
+- **La ventana se aplica por root, no por fila SQL**: `limit()`, `offset()` y `first()` deben operar sobre la secuencia de entidades root resultante, nunca sobre filas joined crudas.
+- **Correctitud primero en V1**: si para preservar esa semántica hace falta desactivar temporalmente el `LIMIT/OFFSET` SQL row-based y reagrupar en memoria, se permite. Este corte prioriza correctitud observable antes que optimización.
+- **`first()` equivale al primer root de la ventana**: cuando hay joins `to-many`, `first()` debe devolver la primera entidad root completa según orden + offset root-safe, no la primera fila del join.
+- **`count()` sigue ignorando la ventana**: igual que el builder base, `count()` expresa el total de roots que cumplen el criterio, no el tamaño de la página actual.
+- **Orden preservado**: el orden de roots después del agrupamiento debe derivarse del orden SQL original; el primer encuentro de cada root fija su posición relativa.
+- **Colecciones completas para cada root visible**: si un root entra en la ventana, su colección joined debe quedar completa dentro del alcance del query, no parcial por efecto del slicing.
+- **Sin prometer eficiencia SQL todavía**: este corte no equivale a una implementación por subquery/root-id windowing ni a paginación escalable. La documentación debe mantener explícito ese gap.
+- **Projection mode sigue siendo row-oriented**: `rows()/firstRow()/pluck()/value()` no heredan esta semántica root-safe; ahí la ventana sigue describiendo filas SQL.
+- **Prueba mínima obligatoria**: toda ampliación de este bloque debe cubrir feature tests sobre SQLite para:
+  - `limit()` root-safe sobre `OneToMany`,
+  - `offset()+first()` root-safe sobre `OneToMany` o `ManyToMany`,
+  - preservación de colección completa para el root devuelto,
+  - y `count()` total consistente aun cuando la query tenga ventana configurada.
+
+#### ORM Joined To-Many Root-Id Windowing V1 (ventana SQL por identifiers antes de hidratar) — Hard rules desde DV-DB-025
+
+Toda optimización posterior al corte `DV-DB-024` sobre windowing joined `to-many` **DEBE** respetar, además de las reglas base anteriores:
+
+- **La ventana visible se resuelve primero como roots, no como filas**: cuando hay joins `to-many` y existe `limit()/offset()/first()`, la implementación puede ejecutar un primer paso SQL que resuelva el conjunto ordenado de identifiers root de la ventana antes de hidratar entidades.
+- **Paso 1 sólo decide qué roots entran**: la query inicial de ventana debe seleccionar identifiers root y preservar el orden observable del query original; no debe fingir que ya resolvió colecciones completas.
+- **Paso 2 hidrata sólo los roots elegidos**: una segunda query sin `LIMIT/OFFSET` row-based puede cargar las filas joined completas, pero debe restringirse al subconjunto de identifiers root resuelto en el paso 1.
+- **Orden final gobernado por la ventana de identifiers**: aunque la segunda query use `WHERE IN (...)`, el orden final de entidades devueltas debe reconstruirse según la secuencia de identifiers seleccionada por la ventana root-safe, no según el orden incidental del `IN`.
+- **Colecciones siguen completas**: optimizar la ventana no autoriza truncar asociaciones joined del root visible; si el root entra, su colección debe hidratarse completa dentro del alcance del query.
+- **`count()` mantiene semántica de total roots**: esta optimización no cambia el significado de `count()`, que sigue representando el total de roots coincidentes y no el tamaño de la ventana.
+- **Projection mode sigue fuera de alcance**: `rows()/firstRow()/pluck()/value()` continúan siendo row-oriented; esta estrategia root-id-driven aplica sólo a entity hydration joined `to-many`.
+- **Prueba mínima obligatoria**: toda implementación de este corte debe cubrir al menos un caso donde la ventana se combine con `orderBy()` sobre un field joined `to-many`, verificando que:
+  - el root seleccionado sea el correcto,
+  - su colección quede completa,
+  - y `offset()+first()` siga devolviendo el root esperado.
+
+#### ORM Relational Partial Hydration To-One V1 (`partial/partialManaged` + `join/leftJoin`) — Hard rules desde DV-DB-026
+
+Toda implementación o extensión de partial hydration relacional sobre joins ORM **DEBE** respetar:
+
+- **Sólo asociaciones `to-one` en este corte**: `partial(...)` y `partialManaged(...)` pueden combinarse con `join()/leftJoin()` únicamente cuando todas las asociaciones joined sean `ManyToOne` o `OneToOne`. Cualquier join `to-many` debe rechazarse explícitamente.
+- **Selección explícita, sin magia implícita de grafos**: el consumer debe pedir fields concretos del target joined (`post.title`, `profile.bio`, etc.). Este corte no autoriza hidratar asociaciones anidadas (`post.author.name`) ni relaciones profundas.
+- **Identificador automático del target parcial**: si se selecciona al menos un field de una asociación joined `to-one`, la implementación debe incluir automáticamente el identifier del target para permitir detached partial coherente o managed partial reusando `IdentityMap`.
+- **`leftJoin()` con target ausente devuelve `null`**: cuando la fila joined no existe, la propiedad de asociación debe quedar en `null`, no en una entidad parcial vacía.
+- **Managed partial sigue siendo managed partial**: cuando el modo es `partialManaged(...)`, tanto el root como el target joined deben registrarse como managed-partial con su subconjunto real de fields loaded; `find()` / `refresh()` deben poder promover esas instancias a entidades completas.
+- **Detached partial sigue fuera de persistencia directa**: cuando el modo es `partial(...)`, ni el root ni el target parcial detached deben venderse como entidades persistibles sin `refresh()`.
+- **Se preserva el linking local `to-one` cuando aplica**: si la metadata inversa también es `to-one`, puede enlazarse la back-reference local entre root y target, pero sin inferir otras asociaciones no seleccionadas.
+- **No se mezcla con `with(...)` ni con projection mode**: la hidratación relacional parcial sigue siendo un modo separado; no debe mezclarse con `with(...)`, `select(...)->rows()` o estrategias declarativas todavía no abiertas.
+- **Prueba mínima obligatoria**: toda ampliación de este bloque debe cubrir feature tests sobre SQLite para:
+  - detached partial joined `ManyToOne` o `OneToOne`,
+  - `leftJoin()` `to-one` con target ausente devolviendo `null`,
+  - managed partial joined `to-one` con flush de un field cargado del target,
+  - y rechazo explícito de joins `to-many` en partial mode.
+
+#### ORM Declarative Fetch Strategies V1 (`fetch: 'lazy'|'eager'`) — Hard rules desde DV-DB-027
+
+Toda implementación o extensión de fetch strategies declarativas en el ORM **DEBE** respetar:
+
+- **`lazy` sigue siendo el default honesto**: la ausencia de `fetch` en atributos de asociación conserva el comportamiento actual bajo demanda; no se introduce magia silenciosa para asociaciones no marcadas.
+- **`eager` es metadata-driven y explícito**: sólo las asociaciones declaradas con `fetch: 'eager'` pueden autocargarse al hidratar roots.
+- **Alcance V1 limitado a roots**: este corte aplica a entidades root resueltas por `find()`, `refresh()`, `get()` y `first()`. No abre proxies lazy transparentes, fetch graphs profundos ni recursión automática multi-hop.
+- **Reutilizar infraestructura existente**: la implementación debe apoyarse en `preloadAssociations()` y en los mecanismos ya correctos de `IdentityMap`, `UnitOfWork`, joins hidratados y snapshots; no debe abrir un pipeline paralelo de hidratación eager.
+- **No recargar asociaciones ya joined**: si una asociación `eager` ya fue resuelta por `join()/leftJoin()`, el post-load no debe volver a consultarla.
+- **Semántica de `leftJoin()`/nulos intacta**: marcar `eager` no autoriza inventar targets; cuando la asociación no existe, debe quedar `null` o colección vacía según corresponda.
+- **Sin prometer lazy transparente todavía**: aceptar `fetch: 'lazy'` en metadata no significa proxies o interceptores; en V1 sólo documenta y conserva el modo bajo demanda existente.
+- **Prueba mínima obligatoria**: toda implementación de este bloque debe cubrir feature tests sobre SQLite para:
+  - `find()` sobre root con asociación `ManyToOne` o `OneToOne` marcada `eager`,
+  - `find()` o query root con colección `OneToMany` o `ManyToMany` marcada `eager`,
+  - `get()/first()` root respetando asociaciones `eager`,
+  - y unit test de metadata verificando `fetch` explícito y default `lazy`.
+
+#### ORM Relational Partial Hydration To-Many V1 (`partial(...)->getPartial()/firstPartial()`) — Hard rules desde DV-DB-028
+
+Toda implementación o extensión de partial hydration relacional sobre joins `to-many` **DEBE** respetar:
+
+- **Detached-only en este corte**: la capacidad se abre únicamente para `partial(...)->getPartial()/firstPartial()`. `partialManaged(...)` sobre joins `to-many` sigue fuera de alcance y debe rechazarse explícitamente.
+- **Semántica root-safe, no row-safe**: cuando existan joins `to-many`, el resultado parcial debe deduplicar roots y materializar colecciones parciales por root; `limit()/offset()/firstPartial()` deben aplicarse por root y no por fila SQL raw.
+- **Colecciones parciales explícitas**: si el consumer pide `comments.body`, la colección resultante contiene targets parciales detached con sólo los fields seleccionados más el identifier automático del target.
+- **`leftJoin()` vacío => `[]`**: una asociación `to-many` sin filas joined debe quedar como colección vacía, no `null`.
+- **Sin magic upgrade a managed**: este corte no autoriza snapshots, dirty-check ni flush sobre colecciones parciales detached.
+- **Compatibilidad con joins `to-one` mezclados**: si una query combina joins `to-one` y `to-many`, el resultado detached debe seguir enlazando cada asociación según su cardinalidad sin duplicar roots ni targets.
+- **Reverse linking sólo donde ya era seguro**: si el target parcial tiene una asociación inversa `to-one`, puede enlazarse de vuelta al root; no se infieren backrefs `to-many`.
+- **Prueba mínima obligatoria**: toda implementación de este bloque debe cubrir feature tests sobre SQLite para:
+  - `OneToMany` parcial detached con deduplicación de roots,
+  - `leftJoin()` `to-many` devolviendo colección vacía,
+  - `limit()/offset()/firstPartial()` root-safe sobre join `to-many`,
+  - `ManyToMany` parcial detached,
+  - y rechazo explícito de `partialManaged()` sobre joins `to-many`.
+
+#### ORM Eager Cascade Batch V1 (segundo salto `eager` sin planners profundos) — Hard rules desde DV-DB-029
+
+Toda implementación o extensión del control sistémico de N+1 en eager preloading **DEBE** respetar:
+
+- **Un salto adicional, no recursión profunda**: este corte sólo autoriza propagar la precarga batch a las asociaciones `eager` de los targets recién cargados. No abre fetch graphs arbitrarios ni planners de múltiples niveles.
+- **Reutilizar el pipeline batch existente**: la segunda ola debe construirse sobre `preloadAssociations()` / helpers batch ya existentes, no mediante `find()` por cada target.
+- **Excluir la back-reference inmediata**: al propagar el segundo salto `eager`, debe omitirse la asociación inversa directa (`mappedBy` / `inversedBy`) para evitar rebotes triviales como `author -> books -> author`.
+- **Mantener semántica de identidad**: los targets de segundo salto deben seguir reusando `IdentityMap` y no duplicar instancias ya gestionadas.
+- **No vender lazy/proxies**: este corte reduce N+1 de segundo salto en precarga eager, pero no introduce intercepción transparente de acceso a propiedad.
+- **No romper `with(...)` ni fetch declarativo**: la mejora debe aplicar tanto a precargas explícitas como a asociaciones root marcadas `fetch: 'eager'`.
+- **Prueba mínima obligatoria**: toda implementación de este bloque debe cubrir feature tests sobre SQLite para:
+  - root con colección `eager`,
+  - target de esa colección con una asociación `eager` adicional,
+  - verificación de que el segundo salto ya quede materializado tras `find()/get()/first()`,
+  - y conservación de identidad compartida cuando varios targets apuntan al mismo segundo target.
+
+#### ORM Relational Partial Hydration To-Many Managed V2 (`partialManaged(...)->getPartialManaged()/firstPartialManaged()`) — Hard rules desde DV-DB-031
+
+Toda implementación o extensión de partial hydration relacional managed sobre joins `to-many` **DEBE** respetar:
+
+- **Managed para fields y membership sólo cuando el runtime ya sabe sincronizarlo**: este corte abre edición/flush de fields cargados en roots y targets `to-many`, y además habilita mutación estructural de membership sobre colecciones partial-managed únicamente en rutas ya reconciliables por el runtime actual.
+- **`ManyToMany` partial-managed sólo desde owning-side**: las asociaciones `ManyToMany` owning-side cargadas vía `partialManaged(...)` deben participar del mismo reconcile real contra la join-table que ya existe para entidades managed completas. Una mutación sobre inverse-side debe fallar con error claro; no se permiten no-ops silenciosos.
+- **`OneToMany` partial-managed exige owning-side consistente**: si se agregan targets a una colección partial-managed `OneToMany`, el owning-side (`mappedBy`) ya debe apuntar al root. Si se remueven targets sin `orphanRemoval`, el owning-side debe haberse limpiado o reasignado; de lo contrario `flush()` debe fallar con error claro.
+- **`orphanRemoval` también aplica en partial-managed**: una colección `OneToMany` partial-managed cargada con `orphanRemoval=true` puede remover miembros estructuralmente y el runtime debe marcarlos para eliminación sin exigir refresh completo del root.
+- **Targets `ManyToMany` deben tener identifier al sincronizar**: si al momento del reconcile un target de la colección owning-side sigue sin identifier persistente, `flush()` debe fallar con mensaje explícito.
+- **Semántica root-safe**: `getPartialManaged()/firstPartialManaged()` sobre joins `to-many` deben deduplicar roots y aplicar `limit()/offset()/firstPartialManaged()` por root, no por fila SQL.
+- **Targets también managed**: los items de la colección parcial deben quedar registrados en `IdentityMap` / `UnitOfWork` como managed partials para que sus fields explícitos puedan flushear.
+- **`leftJoin()` vacío => `[]`**: una asociación `to-many` sin filas joined debe materializarse como colección vacía también en modo managed.
+- **Seguir sin vender proxies**: este bloque no introduce lazy/proxies transparentes ni cambia el acceso a propiedades fuera de los fields explícitamente cargados.
+- **Prueba mínima obligatoria**: toda implementación de este bloque debe cubrir feature tests sobre SQLite para:
+  - `OneToMany` managed partial con edición de field en root y en target,
+  - `ManyToMany` managed partial con edición de field en target y mutación estructural add/remove sobre owning-side,
+  - `OneToMany` partial-managed con `orphanRemoval` y alta válida usando owning-side consistente,
+  - `leftJoin()` `to-many` devolviendo `[]`,
+  - `offset()/firstPartialManaged()` root-safe,
+  - y rechazo explícito de mutaciones no reconciliables (inverse `ManyToMany` o `OneToMany` sin owning-side consistente).
 
 ### Security, Telemetry, CLI y Plugins
 
